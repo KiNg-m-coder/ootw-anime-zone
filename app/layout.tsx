@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 
 export const metadata = {
   title: "OOTW Anime Zone",
-  description: "Out of This World — Anime, Community and Friends.",
+  description: "Anime, Community and Friends.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
