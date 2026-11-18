@@ -1,7 +1,7 @@
 
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 import { createClient } from "../src/lib/client";
 
@@ -24,6 +24,24 @@ type Profile = {
   banner_url: string | null;
   last_seen_at: string | null;
 };
+
+type FriendSearchResult = {
+  user_id: string;
+  username: string;
+  display_name: string;
+  bio: string;
+  avatar_url: string | null;
+};
+
+type FriendRequest = {
+  id: string;
+  sender_id: string;
+  recipient_id: string;
+  status: "pending" | "accepted" | "declined";
+  created_at: string;
+};
+
+type Friend = FriendSearchResult & { request_id: string };
 
 type SuggestionVote = -1 | 1;
 
@@ -103,6 +121,8 @@ export default function Home() {
   const [tab, setTab] = useState<Tab>("lobby");
 
   const [username, setUsername] = useState("");
+  const [isGuestAccount, setIsGuestAccount] = useState(false);
+  const [restoringSession, setRestoringSession] = useState(true);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 
@@ -126,6 +146,19 @@ export default function Home() {
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
   const [bannerPreview, setBannerPreview] = useState<string | null>(null);
 
+  // Friends and friend requests (works for guest and registered auth users).
+  const [friendSearchOpen, setFriendSearchOpen] = useState(false);
+  const [friendSearchTerm, setFriendSearchTerm] = useState("");
+  const [friendSearchResults, setFriendSearchResults] = useState<FriendSearchResult[]>([]);
+  const [friendSearchLoading, setFriendSearchLoading] = useState(false);
+  const friendSearchSequence = useRef(0);
+  const [friendActionLoading, setFriendActionLoading] = useState<string | null>(null);
+  const [friendError, setFriendError] = useState("");
+  const [friendNotice, setFriendNotice] = useState("");
+  const [incomingRequests, setIncomingRequests] = useState<FriendRequest[]>([]);
+  const [friends, setFriends] = useState<Friend[]>([]);
+  const [friendsLoading, setFriendsLoading] = useState(false);
+
   // Community suggestion feed
   const [suggestionText, setSuggestionText] = useState("");
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
@@ -140,6 +173,38 @@ export default function Home() {
     minutes: 0,
     seconds: 0,
   });
+
+  // Restore an existing guest or registered session when Anime Zone is reopened.
+  // Supabase persists the auth session in this browser until the user logs out.
+  useEffect(() => {
+    let cancelled = false;
+
+    async function restoreExistingSession() {
+      try {
+        const { data: { session }, error: sessionError } =
+          await supabase.auth.getSession();
+        if (sessionError) throw sessionError;
+        if (!session) return;
+
+        const savedUsername = await getSavedUsername(session.user.id);
+        if (!savedUsername || cancelled) return;
+
+        setUsername(savedUsername);
+        setIsGuestAccount(Boolean((session.user as { is_anonymous?: boolean }).is_anonymous));
+        setScreen("lobby");
+        setTab("lobby");
+      } catch (restoreError) {
+        console.error("Session restore error:", restoreError);
+      } finally {
+        if (!cancelled) setRestoringSession(false);
+      }
+    }
+
+    void restoreExistingSession();
+    return () => { cancelled = true; };
+    // Run once when the app opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     setCountdown(getCountdown());
@@ -311,6 +376,133 @@ export default function Home() {
       console.error("Presence update error:", err);
     }
   }
+
+  // Search automatically as the user types, with a short debounce so we do not
+  // send a database request for every keystroke.
+  useEffect(() => {
+    const term = friendSearchTerm.trim();
+    const sequence = ++friendSearchSequence.current;
+
+    if (!friendSearchOpen || term.length < 2) {
+      setFriendSearchResults([]);
+      setFriendSearchLoading(false);
+      if (term.length < 2) setFriendError("");
+      return;
+    }
+
+    setFriendSearchLoading(true);
+    setFriendError("");
+    const timeout = window.setTimeout(async () => {
+      try {
+        const { data, error: searchError } = await supabase.rpc("anime_search_users", { search_term: term });
+        if (sequence !== friendSearchSequence.current) return;
+        if (searchError) throw searchError;
+        setFriendSearchResults((data || []) as FriendSearchResult[]);
+      } catch (err) {
+        if (sequence !== friendSearchSequence.current) return;
+        console.error("Friend search error:", err);
+        setFriendSearchResults([]);
+        setFriendError(err instanceof Error ? err.message : "Could not search Anime Zone users.");
+      } finally {
+        if (sequence === friendSearchSequence.current) setFriendSearchLoading(false);
+      }
+    }, 300);
+
+    return () => window.clearTimeout(timeout);
+  }, [friendSearchTerm, friendSearchOpen]);
+
+  async function sendFriendRequest(targetUserId: string) {
+    setFriendActionLoading(targetUserId);
+    setFriendError("");
+    setFriendNotice("");
+    try {
+      const { error: requestError } = await supabase.rpc("anime_send_friend_request", { target_user_id: targetUserId });
+      if (requestError) throw requestError;
+      setFriendNotice("Friend request sent!");
+      setFriendSearchResults((current) => current.filter((person) => person.user_id !== targetUserId));
+      await loadFriendData();
+    } catch (err) {
+      console.error("Send friend request error:", err);
+      setFriendError(err instanceof Error ? err.message : "Could not send friend request.");
+    } finally {
+      setFriendActionLoading(null);
+    }
+  }
+
+  async function respondToFriendRequest(requestId: string, decision: "accepted" | "declined") {
+    setFriendActionLoading(requestId);
+    setFriendError("");
+    try {
+      const { error: responseError } = await supabase.rpc("anime_respond_friend_request", { request_id: requestId, decision });
+      if (responseError) throw responseError;
+      await loadFriendData();
+    } catch (err) {
+      console.error("Friend request response error:", err);
+      setFriendError(err instanceof Error ? err.message : "Could not update friend request.");
+    } finally {
+      setFriendActionLoading(null);
+    }
+  }
+
+  async function loadFriendData() {
+    setFriendsLoading(true);
+    try {
+      const { data: authData, error: authError } = await supabase.auth.getUser();
+      if (authError) throw authError;
+      const currentUserId = authData.user?.id;
+      if (!currentUserId) return;
+
+      const { data: requestRows, error: requestsError } = await supabase
+        .from("anime_friend_requests")
+        .select("id, sender_id, recipient_id, status, created_at")
+        .or(`sender_id.eq.${currentUserId},recipient_id.eq.${currentUserId}`)
+        .order("created_at", { ascending: false });
+      if (requestsError) throw requestsError;
+
+      const rows = (requestRows || []) as FriendRequest[];
+      setIncomingRequests(rows.filter((row) => row.status === "pending" && row.recipient_id === currentUserId));
+      const accepted = rows.filter((row) => row.status === "accepted");
+      const friendIds = accepted.map((row) => row.sender_id === currentUserId ? row.recipient_id : row.sender_id);
+      if (friendIds.length === 0) {
+        setFriends([]);
+        return;
+      }
+
+      const [{ data: names, error: namesError }, { data: profiles, error: profilesError }] = await Promise.all([
+        supabase.from("anime_usernames").select("user_id, username").in("user_id", friendIds),
+        supabase.from("anime_profiles").select("user_id, display_name, bio, avatar_url").in("user_id", friendIds),
+      ]);
+      if (namesError) throw namesError;
+      if (profilesError) throw profilesError;
+      const nameRows = names || [];
+      const profileRows = profiles || [];
+      const nextFriends: Friend[] = friendIds.flatMap((id) => {
+        const name = nameRows.find((item) => item.user_id === id);
+        if (!name) return [];
+        const personProfile = profileRows.find((item) => item.user_id === id);
+        const relation = accepted.find((row) => row.sender_id === id || row.recipient_id === id);
+        return [{
+          user_id: id,
+          username: name.username,
+          display_name: personProfile?.display_name || name.username,
+          bio: personProfile?.bio || "",
+          avatar_url: personProfile?.avatar_url || null,
+          request_id: relation?.id || "",
+        }];
+      });
+      setFriends(nextFriends);
+    } catch (err) {
+      console.error("Friend data loading error:", err);
+      setFriendError(err instanceof Error ? err.message : "Could not load friends.");
+    } finally {
+      setFriendsLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (screen === "lobby" && tab === "chat") void loadFriendData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen, tab]);
 
   async function loadSuggestions() {
     setSuggestionsLoading(true);
@@ -514,6 +706,7 @@ export default function Home() {
 
       if (existingUsername) {
         setUsername(existingUsername);
+        setIsGuestAccount(true);
         try { window.localStorage.setItem("az_guest_username", existingUsername); } catch {}
         setScreen("lobby");
         setTab("lobby");
@@ -524,6 +717,7 @@ export default function Home() {
 
       try { window.localStorage.setItem("az_guest_username", username.trim()); } catch {}
       setUsername(username.trim());
+      setIsGuestAccount(true);
       setScreen("lobby");
       setTab("lobby");
     } catch (err) {
@@ -581,6 +775,7 @@ export default function Home() {
       if (updateError) throw updateError;
 
       setUsername(existingUsername);
+      setIsGuestAccount(false);
       setScreen("lobby");
       setTab("lobby");
 
@@ -629,6 +824,7 @@ export default function Home() {
       }
 
       setUsername(savedUsername);
+      setIsGuestAccount(false);
       setScreen("lobby");
       setTab("lobby");
     } catch (err) {
@@ -647,9 +843,14 @@ export default function Home() {
     setNotice("");
 
     try {
-      const { error: signOutError } = await supabase.auth.signOut();
+      const { error: signOutError } = await supabase.auth.signOut({ scope: "local" });
       if (signOutError) throw signOutError;
 
+      // A guest is temporary: remove its remembered device identity only after sign-out succeeds.
+      // Registered account data remains in Supabase and can be restored by signing in again.
+      try { window.localStorage.removeItem("az_guest_username"); } catch {}
+      setIsGuestAccount(false);
+      setUsername("");
       setProfile(null);
       setProfileMenuOpen(false);
       setEditingProfile(false);
@@ -865,6 +1066,17 @@ export default function Home() {
     setScreen(next);
   }
 
+  if (restoringSession) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-[#080611] text-[#f7efff]">
+        <div className="text-center">
+          <img src="/az-logo.png" alt="Anime Zone" className="mx-auto h-20 w-20 rounded-2xl object-cover" />
+          <p className="mt-5 text-sm font-semibold text-[#cbb9df]">Entering Anime Zone...</p>
+        </div>
+      </main>
+    );
+  }
+
   if (screen === "welcome") {
     return (
       <main className="relative min-h-screen overflow-hidden bg-[#080611] text-[#f7efff] before:pointer-events-none before:fixed before:inset-0 before:bg-[radial-gradient(ellipse_at_15%_10%,rgba(124,58,237,0.22),transparent_38%),radial-gradient(ellipse_at_85%_30%,rgba(8,145,178,0.13),transparent_35%),radial-gradient(ellipse_at_50%_100%,rgba(190,24,93,0.12),transparent_42%)] before:content-['']">
@@ -990,7 +1202,7 @@ export default function Home() {
 
           <p className="mt-3 text-sm leading-6 text-[#b7a8ca]">
             {isGuest
-              ? "Welcome back if you've visited before. Your guest username is remembered on this browser."
+              ? "Your guest session stays on this device until you log out. Choose a username to get started."
               : isSignup
                 ? "Create a recoverable account to keep access to your profile."
                 : "Sign in with the email and password you registered with."}
@@ -1099,7 +1311,7 @@ export default function Home() {
 
   return (
     <main className="relative min-h-screen overflow-hidden bg-[#080611] pb-24 text-[#f7efff] before:pointer-events-none before:fixed before:inset-0 before:bg-[radial-gradient(ellipse_at_10%_0%,rgba(124,58,237,0.18),transparent_35%),radial-gradient(ellipse_at_90%_35%,rgba(8,145,178,0.12),transparent_35%)] before:content-['']">
-      <div className="relative z-10 mx-auto max-w-6xl px-5">
+      <div className="relative z-10 mx-auto max-w-7xl px-6 sm:px-8">
         <header className="flex items-center justify-between py-6">
           <div>
             <p className="font-black tracking-wide">
@@ -1109,6 +1321,21 @@ export default function Home() {
           </div>
 
           <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                setFriendSearchOpen(true);
+                setFriendSearchTerm("");
+                setFriendSearchResults([]);
+                setFriendError("");
+                setFriendNotice("");
+              }}
+              aria-label="Find friends"
+              title="Add friends"
+              className="relative flex h-11 w-11 items-center justify-center rounded-full border border-[#604276] bg-[#211632] text-xl text-[#e9d5ff] transition hover:border-fuchsia-400 hover:bg-[#302044]"
+            >
+              ♡+
+            </button>
             <button
               type="button"
               onClick={() => {
@@ -1145,9 +1372,9 @@ export default function Home() {
         </header>
 
         {tab === "lobby" ? (
-          <div className="space-y-7">
+          <div className="space-y-10">
             {/* WEEKLY ANNOUNCEMENT */}
-            <section className="rounded-[1.7rem] border border-[#49345f] bg-gradient-to-br from-[#1d1530] via-[#171126] to-[#101827] p-6 shadow-lg shadow-purple-950/40">
+            <section className="rounded-[1.7rem] border border-[#49345f] bg-gradient-to-br from-[#1d1530] via-[#171126] to-[#101827] p-7 sm:p-8 shadow-lg shadow-purple-950/40">
               <div className="flex items-center justify-between gap-3">
                 <h2 className="text-lg font-black">📢 Announcements</h2>
                 <span className="rounded-full bg-[#302044] px-3 py-1 text-xs font-bold text-[#d7b4ff]">
@@ -1344,19 +1571,68 @@ export default function Home() {
             </section>
           </div>
         ) : (
-          <section className="flex min-h-[65vh] flex-col items-center justify-center rounded-[2rem] border border-[#3a2b50] bg-[#171126] p-8 text-center shadow-lg shadow-purple-950/60">
-            <div className="text-6xl">💬</div>
-            <h1 className="mt-5 text-3xl font-black">Anime Chat</h1>
-            <p className="mt-3 max-w-md text-sm leading-6 text-[#b7a8ca]">
-              The shared community chat is coming next. Soon you'll be able to
-              talk with other anime fans here.
-            </p>
-            <span className="mt-5 rounded-full bg-[#302044] px-4 py-2 text-xs font-bold text-[#d7b4ff]">
-              CHAT · COMING SOON
-            </span>
+          <section className="space-y-6">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h1 className="text-3xl font-black">Anime Chat</h1>
+                <p className="mt-1 text-sm text-[#b7a8ca]">Your Anime Zone connections.</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button type="button" aria-label="View friend requests" title="Friend requests" onClick={() => document.getElementById("anime-friend-requests")?.scrollIntoView({ behavior: "smooth", block: "start" })} className="relative flex h-10 w-10 items-center justify-center rounded-xl border border-[#604276] bg-[#211632] text-lg text-[#e9d5ff]">
+                  ♡
+                  {incomingRequests.length > 0 && <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-fuchsia-500 px-1 text-[10px] font-black text-white">{incomingRequests.length}</span>}
+                </button>
+              <button type="button" onClick={() => void loadFriendData()} disabled={friendsLoading} className="rounded-xl border border-[#604276] bg-[#211632] px-4 py-2 text-sm font-bold text-[#e9d5ff] disabled:opacity-50">
+                {friendsLoading ? "Refreshing..." : "↻ Refresh"}
+              </button>
+              </div>
+            </div>
+
+            <div id="anime-friend-requests" className="scroll-mt-6 rounded-[1.7rem] border border-[#49345f] bg-gradient-to-br from-[#1d1530] via-[#171126] to-[#101827] p-5 shadow-lg shadow-purple-950/40 sm:p-6">
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="text-xl font-black">Friend Requests</h2>
+                <span className="rounded-full bg-[#302044] px-3 py-1 text-xs font-bold text-[#d7b4ff]">{incomingRequests.length} NEW</span>
+              </div>
+              {incomingRequests.length === 0 ? (
+                <p className="mt-4 rounded-xl bg-[#120d1d]/70 p-5 text-sm text-[#a995c2]">No pending friend requests right now.</p>
+              ) : (
+                <div className="mt-4 space-y-3">
+                  {incomingRequests.map((request) => {
+                    const sender = friendSearchResults.find((person) => person.user_id === request.sender_id);
+                    return <div key={request.id} className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#49345f] bg-[#120d1d]/80 p-4">
+                      <div className="flex items-center gap-3"><div className="flex h-11 w-11 items-center justify-center overflow-hidden rounded-full bg-[#302044]">{sender?.avatar_url ? <img src={sender.avatar_url} alt="" className="h-full w-full object-cover" /> : "👤"}</div><div><p className="font-bold">Friend request</p><p className="text-xs text-[#a995c2]">From an Anime Zone member</p></div></div>
+                      <div className="flex gap-2"><button type="button" onClick={() => void respondToFriendRequest(request.id, "accepted")} disabled={friendActionLoading === request.id} className="rounded-lg bg-[#8b5cf6] px-3 py-2 text-xs font-bold text-white">Accept</button><button type="button" onClick={() => void respondToFriendRequest(request.id, "declined")} disabled={friendActionLoading === request.id} className="rounded-lg border border-[#604276] px-3 py-2 text-xs font-bold text-[#d7b4ff]">Decline</button></div>
+                    </div>;
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-[1.7rem] border border-[#49345f] bg-gradient-to-br from-[#1d1530] via-[#171126] to-[#101827] p-5 shadow-lg shadow-purple-950/40 sm:p-6">
+              <div className="flex items-center justify-between gap-3"><h2 className="text-xl font-black">Friends</h2><span className="rounded-full bg-[#302044] px-3 py-1 text-xs font-bold text-[#d7b4ff]">{friends.length}</span></div>
+              {friendsLoading && friends.length === 0 ? <p className="mt-4 text-sm text-[#b7a8ca]">Loading friends...</p> : friends.length === 0 ? <div className="mt-4 rounded-xl border border-dashed border-[#604276] p-7 text-center"><p className="font-bold">Your friends list is empty</p><p className="mt-1 text-sm text-[#a995c2]">Use the ♡+ button at the top to find Anime Zone members.</p></div> : <div className="mt-4 grid gap-3 sm:grid-cols-2">{friends.map((friend) => <div key={friend.user_id} className="flex items-center gap-3 rounded-2xl border border-[#49345f] bg-[#120d1d]/80 p-4"><div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[#302044]">{friend.avatar_url ? <img src={friend.avatar_url} alt="" className="h-full w-full object-cover" /> : <span>👤</span>}</div><div className="min-w-0"><p className="truncate font-bold">{friend.display_name}</p><p className="truncate text-xs text-[#a995c2]">@{friend.username}</p><p className="mt-1 text-xs text-[#8b7b9e]">Friends · messaging coming next</p></div></div>)}</div>}
+            </div>
+            {friendError && <p role="alert" className="break-words rounded-xl border border-red-400/20 bg-red-500/10 px-4 py-3 text-sm text-red-200">{friendError}</p>}
           </section>
         )}
       </div>
+
+      {friendSearchOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 px-4 py-6 backdrop-blur-sm" onClick={() => setFriendSearchOpen(false)}>
+          <section role="dialog" aria-modal="true" aria-labelledby="friend-search-title" className="max-h-[88vh] w-full max-w-xl overflow-y-auto rounded-[2rem] border border-[#604276] bg-[#171126] p-6 shadow-2xl shadow-purple-950/70" onClick={(event) => event.stopPropagation()}>
+            <div className="flex items-center justify-between gap-3"><div><h2 id="friend-search-title" className="text-2xl font-black">Find Friends</h2><p className="mt-1 text-sm text-[#b7a8ca]">Search by Anime Zone username.</p></div><button type="button" onClick={() => setFriendSearchOpen(false)} className="rounded-xl bg-[#302044] px-3 py-2 font-bold text-[#e9d5ff]" aria-label="Close">✕</button></div>
+            <div className="mt-6">
+              <input value={friendSearchTerm} onChange={(event) => setFriendSearchTerm(event.target.value)} maxLength={20} placeholder="Search username..." autoComplete="off" className="w-full rounded-xl border border-[#604276] bg-[#100c19] px-4 py-4 text-sm outline-none focus:border-[#c084fc]" />
+              <p className="mt-2 text-xs text-[#8f7da5]">{friendSearchTerm.trim().length < 2 ? "Type at least 2 characters to find people." : friendSearchLoading ? "Searching..." : `${friendSearchResults.length} ${friendSearchResults.length === 1 ? "user" : "users"} found`}</p>
+            </div>
+            {friendError && <p role="alert" className="mt-4 break-words rounded-xl bg-red-500/10 px-4 py-3 text-sm text-red-200">{friendError}</p>}
+            {friendNotice && <p className="mt-4 rounded-xl bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{friendNotice}</p>}
+            <div className="mt-5 space-y-3">{friendSearchResults.map((person) => <div key={person.user_id} className="flex items-center gap-3 rounded-2xl border border-[#49345f] bg-[#100c19] p-4"><div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[#302044]">{person.avatar_url ? <img src={person.avatar_url} alt="" className="h-full w-full object-cover" /> : <span>👤</span>}</div><div className="min-w-0 flex-1"><p className="truncate font-bold">{person.display_name || person.username}</p><p className="truncate text-xs text-[#c084fc]">@{person.username}</p><p className="mt-1 line-clamp-2 text-xs text-[#a995c2]">{person.bio || "Anime Zone member"}</p></div><button type="button" onClick={() => void sendFriendRequest(person.user_id)} disabled={friendActionLoading === person.user_id} className="shrink-0 rounded-xl bg-[#8b5cf6] px-3 py-2 text-xs font-bold text-white disabled:opacity-50">{friendActionLoading === person.user_id ? "Sending..." : "Add Friend"}</button></div>)}
+            {friendSearchResults.length === 0 && !friendSearchLoading && friendSearchTerm.trim().length >= 2 && !friendError && <p className="rounded-xl border border-dashed border-[#604276] p-6 text-center text-sm text-[#a995c2]">No users found. Check the spelling and try again.</p>}</div>
+            <p className="mt-5 text-xs leading-5 text-[#8f7da5]">Guest and registered accounts can appear in search. Guest accounts may lose access if their temporary browser session is cleared.</p>
+          </section>
+        </div>
+      )}
 
       {profileMenuOpen && (
         <div
@@ -1582,6 +1858,28 @@ export default function Home() {
                       <p className="mt-4 break-words rounded-xl bg-red-50 px-4 py-3 text-sm text-red-600">
                         {profileError}
                       </p>
+                    )}
+
+                    {isGuestAccount && (
+                      <div className="mt-6 rounded-2xl border border-fuchsia-400/30 bg-gradient-to-r from-[#26143c] to-[#13243a] p-5">
+                        <p className="text-base font-black text-white">Save your Anime Zone account</p>
+                        <p className="mt-2 text-sm leading-6 text-[#cbb9df]">Create a login with your email and password. Your current username and profile will be kept.</p>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setProfileMenuOpen(false);
+                            setEditingProfile(false);
+                            setError("");
+                            setNotice("");
+                            setEmail("");
+                            setPassword("");
+                            setScreen("signup");
+                          }}
+                          className="mt-4 w-full rounded-xl bg-[#8b5cf6] px-5 py-3 font-bold text-white transition hover:bg-[#7c3aed]"
+                        >
+                          Sign Up & Save Account →
+                        </button>
+                      </div>
                     )}
 
                     <button
