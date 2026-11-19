@@ -238,7 +238,7 @@ export default function Home() {
 
   function isAnimeZoneAdmin(value: string) {
     const normalized = value.trim().replace(/^@/, "").toLowerCase();
-    return normalized === "ootw_team" || normalized === "animeking2026";
+    return normalized === "ootwtech" || normalized === "animeking2026";
   }
 
   function AdminName({ value }: { value: string }) {
