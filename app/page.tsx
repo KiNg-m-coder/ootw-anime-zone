@@ -177,6 +177,8 @@ export default function Home() {
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
   const [postingSuggestion, setPostingSuggestion] = useState(false);
   const [suggestionError, setSuggestionError] = useState("");
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [deletingSuggestionId, setDeletingSuggestionId] = useState<string | null>(null);
 
   // Monthly community anime theme voting and live site activity.
   const monthlyAnimeOptions = ["One Piece", "Naruto", "Jujutsu Kaisen", "Demon Slayer", "Solo Leveling", "Attack on Titan", "My Hero Academia", "Black Clover"];
@@ -238,7 +240,7 @@ export default function Home() {
 
   function isAnimeZoneAdmin(value: string) {
     const normalized = value.trim().replace(/^@/, "").toLowerCase();
-    return normalized === "ootwtech" || normalized === "animeking2026";
+    return normalized === "ootw_team" || normalized === "animeking" || normalized === "animeking2026";
   }
 
   function AdminName({ value }: { value: string }) {
@@ -590,6 +592,48 @@ export default function Home() {
     }
   }
 
+  async function refreshAdminStatus() {
+    try {
+      const { data, error: adminError } = await supabase.rpc("anime_is_admin");
+      if (adminError) throw adminError;
+      setIsAdmin(data === true);
+    } catch (err) {
+      console.error("Admin status check failed:", err);
+      setIsAdmin(false);
+    }
+  }
+
+  async function deleteSuggestion(suggestionId: string) {
+    if (!isAdmin) {
+      setSuggestionError("Only Anime Zone admins can delete community suggestions.");
+      return;
+    }
+
+    const confirmed = window.confirm("Delete this community suggestion? This cannot be undone.");
+    if (!confirmed) return;
+
+    setDeletingSuggestionId(suggestionId);
+    setSuggestionError("");
+
+    try {
+      const { error: deleteError } = await supabase
+        .from("anime_suggestions")
+        .delete()
+        .eq("id", suggestionId);
+
+      if (deleteError) throw deleteError;
+
+      setSuggestions((current) => current.filter((item) => item.id !== suggestionId));
+    } catch (err) {
+      console.error("Suggestion deletion error:", err);
+      setSuggestionError(
+        err instanceof Error ? err.message : "Could not delete this suggestion."
+      );
+    } finally {
+      setDeletingSuggestionId(null);
+    }
+  }
+
   async function postSuggestion() {
     const cleanContent = suggestionText.trim();
 
@@ -728,6 +772,16 @@ export default function Home() {
     if (screen === "lobby" && tab === "lobby") void loadMonthlyVotes();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [screen, tab]);
+
+  // Admin privileges are verified by Supabase for the current authenticated user.
+  useEffect(() => {
+    if (screen === "lobby") {
+      void refreshAdminStatus();
+    } else {
+      setIsAdmin(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen, username]);
 
   // Load the community feed whenever a member opens the lobby tab.
   useEffect(() => {
@@ -1679,7 +1733,7 @@ export default function Home() {
                       <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-6 text-[#e5dced]">
                         {suggestion.content}
                       </p>
-                      <div className="mt-4 flex items-center gap-2">
+                      <div className="mt-4 flex flex-wrap items-center gap-2">
                         <button
                           type="button"
                           onClick={() => void voteOnSuggestion(suggestion.id, 1)}
@@ -1696,6 +1750,17 @@ export default function Home() {
                         >
                           <span>👎</span><span>{suggestion.dislikes}</span>
                         </button>
+                        {isAdmin && (
+                          <button
+                            type="button"
+                            onClick={() => void deleteSuggestion(suggestion.id)}
+                            disabled={deletingSuggestionId === suggestion.id}
+                            className="ml-auto rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm font-bold text-rose-700 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-50"
+                            aria-label={`Delete suggestion by ${suggestion.username}`}
+                          >
+                            {deletingSuggestionId === suggestion.id ? "Deleting..." : "🗑 Delete"}
+                          </button>
+                        )}
                       </div>
                     </article>
                   ))}
@@ -1762,6 +1827,16 @@ export default function Home() {
             <h1 className="mt-2 text-4xl font-black text-[#393158]">Leaderboard</h1>
             <p className="mx-auto mt-3 max-w-xl text-sm leading-6 text-[#686184]">We’re building a community leaderboard with member rankings, activity and achievements. Stay tuned!</p>
             <div className="mt-6 rounded-2xl border border-[#d9d4ff] bg-white/80 p-4 text-sm font-bold text-[#6555a5]">🚧 UNDER CONSTRUCTION 🚧</div>
+            <div className="mx-auto mt-5 w-full max-w-[260px] overflow-hidden rounded-2xl border border-[#d9d4ff] bg-white/80 p-2 shadow-lg shadow-violet-100">
+              <iframe
+                src="https://tenor.com/embed/9298246358806996976?autoplay=1&loop=1&mute=1"
+                title="Anime Zone under construction animation"
+                loading="eager"
+                allow="autoplay; encrypted-media"
+                allowFullScreen
+                className="block h-[260px] w-full rounded-xl"
+              />
+            </div>
             <div className="mt-7 flex flex-wrap justify-center gap-3 text-sm font-bold">
               <a className="rounded-xl bg-[#e9e7ff] px-4 py-3 text-[#51458e] hover:bg-[#dedaff]" href="https://www.youtube.com/@greenbutton" target="_blank" rel="noreferrer">▶ YouTube · @greenbutton</a>
               <a className="rounded-xl bg-[#e9e7ff] px-4 py-3 text-[#51458e] hover:bg-[#dedaff]" href="https://www.instagram.com/ootwtechh/" target="_blank" rel="noreferrer">◎ Instagram · @ootwtechh</a>
@@ -1880,7 +1955,7 @@ export default function Home() {
                 </div>
 
                 <h3 className="mt-4 text-xl font-black">
-                  <AdminName value={username} />
+                  {profile?.display_name || username}
                 </h3>
                 <p className="text-sm text-[#78a0ba]">@{username}</p>
 
@@ -1947,24 +2022,15 @@ export default function Home() {
                     <label className="mt-4 block text-sm font-bold">
                       Username · Locked
                     </label>
-                    <div className="relative mt-2">
-                      <input
-                        type="text"
-                        value={`@${username}`}
-                        readOnly
-                        aria-label="Permanent username"
-                        className="w-full cursor-not-allowed rounded-xl border border-[#d9d4ff] bg-[#f0f7fb] px-4 py-3 pr-12 text-sm font-semibold text-[#6e6889] outline-none"
-                      />
-                      <span
-                        aria-hidden="true"
-                        title="Your username cannot be changed"
-                        className="absolute right-4 top-1/2 -translate-y-1/2 text-[#6e6889]"
-                      >
-                        🔒
-                      </span>
-                    </div>
+                    <input
+                      type="text"
+                      value={`@${username}`}
+                      readOnly
+                      aria-label="Permanent username"
+                      className="mt-2 w-full cursor-not-allowed rounded-xl border border-[#d9d4ff] bg-[#f0f7fb] px-4 py-3 text-sm font-semibold text-[#6e6889] outline-none"
+                    />
                     <p className="mt-1 text-xs text-[#85809d]">
-                      This is the username you chose when signing up. It cannot be changed.
+                      Your username is permanent and cannot be changed.
                     </p>
 
                     <label className="mt-4 block text-sm font-bold">Bio</label>
@@ -2001,7 +2067,7 @@ export default function Home() {
                         onClick={() => {
                           setEditingProfile(false);
                           setDisplayName(profile?.display_name || username);
-                          setBio(profile?.bio || "");
+                                    setBio(profile?.bio || "");
                           setProfileError("");
                         }}
                         disabled={savingProfile || uploadingImage !== null}
@@ -2054,7 +2120,7 @@ export default function Home() {
                       type="button"
                       onClick={() => {
                         setDisplayName(profile?.display_name || username);
-                        setBio(profile?.bio || "");
+                                setBio(profile?.bio || "");
                         setProfileError("");
                         setEditingProfile(true);
                       }}
