@@ -13,7 +13,7 @@ type Screen =
   | "signin"
   | "lobby";
 
-type Tab = "lobby" | "chat" | "leaderboard";
+type Tab = "lobby" | "chat" | "global" | "leaderboard";
 type ImageType = "avatar" | "banner";
 
 type Profile = {
@@ -41,7 +41,29 @@ type FriendRequest = {
   created_at: string;
 };
 
-type Friend = FriendSearchResult & { request_id: string };
+type Friend = FriendSearchResult & {
+  request_id: string;
+  last_seen_at: string | null;
+  is_online: boolean;
+  last_message?: DirectMessage | null;
+  unread_count?: number;
+};
+
+type DirectMessage = {
+  id: string;
+  sender_id: string;
+  recipient_id: string;
+  content: string;
+  created_at: string;
+};
+
+type GlobalMessage = {
+  id: string;
+  user_id: string;
+  username: string;
+  content: string;
+  created_at: string;
+};
 
 type SuggestionVote = -1 | 1;
 
@@ -170,6 +192,21 @@ export default function Home() {
   const [incomingRequests, setIncomingRequests] = useState<FriendRequest[]>([]);
   const [friends, setFriends] = useState<Friend[]>([]);
   const [friendsLoading, setFriendsLoading] = useState(false);
+  const [chatSection, setChatSection] = useState<"friends" | "requests">("friends");
+  const [selectedChatFriendId, setSelectedChatFriendId] = useState("");
+  const [chatMessages, setChatMessages] = useState<DirectMessage[]>([]);
+  const [chatDraft, setChatDraft] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
+  const [chatSending, setChatSending] = useState(false);
+  const [chatError, setChatError] = useState("");
+  const [unreadMessageCount, setUnreadMessageCount] = useState(0);
+  const [globalMessages, setGlobalMessages] = useState<GlobalMessage[]>([]);
+  const [globalDraft, setGlobalDraft] = useState("");
+  const [globalLoading, setGlobalLoading] = useState(false);
+  const [globalSending, setGlobalSending] = useState(false);
+  const [globalError, setGlobalError] = useState("");
+  const globalScrollRef = useRef<HTMLDivElement>(null);
+  const chatScrollRef = useRef<HTMLDivElement>(null);
 
   // Community suggestion feed
   const [suggestionText, setSuggestionText] = useState("");
@@ -502,7 +539,7 @@ export default function Home() {
 
       const [{ data: names, error: namesError }, { data: profiles, error: profilesError }] = await Promise.all([
         supabase.from("anime_usernames").select("user_id, username").in("user_id", friendIds),
-        supabase.from("anime_profiles").select("user_id, display_name, bio, avatar_url").in("user_id", friendIds),
+        supabase.from("anime_profiles").select("user_id, display_name, bio, avatar_url, last_seen_at").in("user_id", friendIds),
       ]);
       if (namesError) throw namesError;
       if (profilesError) throw profilesError;
@@ -520,6 +557,8 @@ export default function Home() {
           bio: personProfile?.bio || "",
           avatar_url: personProfile?.avatar_url || null,
           request_id: relation?.id || "",
+          last_seen_at: personProfile?.last_seen_at || null,
+          is_online: Boolean(personProfile?.last_seen_at && Date.now() - new Date(personProfile.last_seen_at).getTime() < 90000),
         }];
       });
       setFriends(nextFriends);
@@ -531,10 +570,225 @@ export default function Home() {
     }
   }
 
+  const selectedChatFriend = friends.find((friend) => friend.user_id === selectedChatFriendId) ?? null;
+
+  async function loadUnreadMessages(currentUserId?: string) {
+    try {
+      let id = currentUserId;
+      if (!id) {
+        const { data: auth } = await supabase.auth.getUser();
+        id = auth.user?.id;
+      }
+      if (!id) return;
+
+      const { data: readRows, error: readError } = await supabase
+        .from("anime_dm_read_states")
+        .select("friend_id, last_read_at")
+        .eq("user_id", id);
+      if (readError) throw readError;
+
+      const { data: incoming, error: messageError } = await supabase
+        .from("anime_direct_messages")
+        .select("id, sender_id, recipient_id, content, created_at")
+        .eq("recipient_id", id)
+        .order("created_at", { ascending: false })
+        .limit(500);
+      if (messageError) throw messageError;
+
+      const readAt = new Map((readRows ?? []).map((row) => [row.friend_id, new Date(row.last_read_at).getTime()]));
+      const unread = (incoming ?? []).filter((message) => {
+        const lastRead = readAt.get(message.sender_id);
+        return lastRead === undefined || new Date(message.created_at).getTime() > lastRead;
+      });
+      setUnreadMessageCount(unread.length);
+    } catch (err) {
+      console.error("Unread chat count error:", err);
+    }
+  }
+
+  async function loadChatMessages(friendId: string, markRead = true) {
+    if (!friendId) return;
+    setChatLoading(true);
+    setChatError("");
+    try {
+      const { data: auth, error: authError } = await supabase.auth.getUser();
+      if (authError) throw authError;
+      if (!auth.user) throw new Error("Please sign in again.");
+
+      const { data, error: messagesError } = await supabase
+        .from("anime_direct_messages")
+        .select("id, sender_id, recipient_id, content, created_at")
+        .or(`and(sender_id.eq.${auth.user.id},recipient_id.eq.${friendId}),and(sender_id.eq.${friendId},recipient_id.eq.${auth.user.id})`)
+        .order("created_at", { ascending: true })
+        .limit(300);
+      if (messagesError) throw messagesError;
+      setChatMessages((data ?? []) as DirectMessage[]);
+
+      if (markRead) {
+        const { error: readError } = await supabase
+          .from("anime_dm_read_states")
+          .upsert({
+            user_id: auth.user.id,
+            friend_id: friendId,
+            last_read_at: new Date().toISOString(),
+          }, { onConflict: "user_id,friend_id" });
+        if (readError) throw readError;
+        await loadUnreadMessages(auth.user.id);
+      }
+    } catch (err) {
+      console.error("Chat load error:", err);
+      setChatError(err instanceof Error ? err.message : "Could not load this conversation.");
+    } finally {
+      setChatLoading(false);
+    }
+  }
+
+  async function sendChatMessage(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const content = chatDraft.trim();
+    if (!content || !selectedChatFriend || chatSending) return;
+
+    setChatSending(true);
+    setChatError("");
+    try {
+      const { data: auth, error: authError } = await supabase.auth.getUser();
+      if (authError) throw authError;
+      if (!auth.user) throw new Error("Please sign in again.");
+
+      const { error: insertError } = await supabase
+        .from("anime_direct_messages")
+        .insert({
+          sender_id: auth.user.id,
+          recipient_id: selectedChatFriend.user_id,
+          content,
+        });
+      if (insertError) throw insertError;
+
+      setChatDraft("");
+      await loadChatMessages(selectedChatFriend.user_id, false);
+      await loadUnreadMessages(auth.user.id);
+    } catch (err) {
+      console.error("Send chat message error:", err);
+      setChatError(err instanceof Error ? err.message : "Could not send your message.");
+    } finally {
+      setChatSending(false);
+    }
+  }
+
+  function openDirectMessage(friendId: string) {
+    setSelectedChatFriendId(friendId);
+    void loadChatMessages(friendId, true);
+  }
+
   useEffect(() => {
-    if (screen === "lobby" && tab === "chat") void loadFriendData();
+    if (screen === "lobby" && tab === "chat") {
+      void loadFriendData();
+      void loadUnreadMessages();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [screen, tab]);
+
+  useEffect(() => {
+    if (!selectedChatFriendId) {
+      setChatMessages([]);
+      return;
+    }
+    void loadChatMessages(selectedChatFriendId, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedChatFriendId]);
+
+  useEffect(() => {
+    if (screen !== "lobby" || tab !== "chat") return;
+    const channel = supabase
+      .channel("anime-zone-dm-live")
+      .on("postgres_changes", { event: "*", schema: "public", table: "anime_direct_messages" }, () => {
+        if (selectedChatFriendId) void loadChatMessages(selectedChatFriendId, true);
+        void loadUnreadMessages();
+        void loadFriendData();
+      })
+      .subscribe();
+    const timer = window.setInterval(() => {
+      void loadFriendData();
+      void loadUnreadMessages();
+      if (selectedChatFriendId) void loadChatMessages(selectedChatFriendId, true);
+    }, 20000);
+    return () => {
+      window.clearInterval(timer);
+      void supabase.removeChannel(channel);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen, tab, selectedChatFriendId]);
+
+  useEffect(() => {
+    const element = chatScrollRef.current;
+    if (element) element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
+  }, [chatMessages]);
+
+  async function loadGlobalMessages() {
+    setGlobalLoading(true);
+    setGlobalError("");
+    try {
+      const { data, error: queryError } = await supabase
+        .from("anime_global_messages")
+        .select("id, user_id, username, content, created_at")
+        .order("created_at", { ascending: true })
+        .limit(150);
+      if (queryError) throw queryError;
+      setGlobalMessages((data ?? []) as GlobalMessage[]);
+    } catch (err) {
+      console.error("Global chat load error:", err);
+      setGlobalError(err instanceof Error ? err.message : "Could not load Global Chat.");
+    } finally {
+      setGlobalLoading(false);
+    }
+  }
+
+  async function sendGlobalMessage(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const content = globalDraft.trim();
+    if (!content || globalSending) return;
+    setGlobalSending(true);
+    setGlobalError("");
+    try {
+      const { data: auth, error: authError } = await supabase.auth.getUser();
+      if (authError) throw authError;
+      if (!auth.user) throw new Error("Please sign in again.");
+      const { error: insertError } = await supabase
+        .from("anime_global_messages")
+        .insert({ user_id: auth.user.id, content });
+      if (insertError) throw insertError;
+      setGlobalDraft("");
+      await loadGlobalMessages();
+    } catch (err) {
+      console.error("Global chat send error:", err);
+      setGlobalError(err instanceof Error ? err.message : "Could not send message.");
+    } finally {
+      setGlobalSending(false);
+    }
+  }
+
+  useEffect(() => {
+    if (screen !== "lobby" || tab !== "global") return;
+    void loadGlobalMessages();
+    const channel = supabase
+      .channel("anime-zone-global-chat-live")
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "anime_global_messages" }, (payload) => {
+        const incoming = payload.new as GlobalMessage;
+        setGlobalMessages((current) => current.some((item) => item.id === incoming.id) ? current : [...current, incoming].slice(-150));
+      })
+      .subscribe();
+    const timer = window.setInterval(() => void loadGlobalMessages(), 30000);
+    return () => {
+      window.clearInterval(timer);
+      void supabase.removeChannel(channel);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen, tab]);
+
+  useEffect(() => {
+    const element = globalScrollRef.current;
+    if (element) element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
+  }, [globalMessages]);
 
   async function loadSuggestions() {
     setSuggestionsLoading(true);
@@ -1484,11 +1738,9 @@ export default function Home() {
     <main className="relative min-h-screen overflow-hidden bg-[#f4f2ff] pb-24 text-[#292448] before:pointer-events-none before:fixed before:inset-0 before:bg-[radial-gradient(ellipse_at_10%_0%,rgba(124,58,237,0.18),transparent_35%),radial-gradient(ellipse_at_90%_35%,rgba(8,145,178,0.12),transparent_35%)] before:content-['']">
       <div className="relative z-10 mx-auto max-w-7xl px-6 sm:px-8">
         <header className="flex items-center justify-between py-6">
-          <div>
-            <p className="font-black tracking-wide">
-              OOTW <span className="text-[#7561c8]">ANIME ZONE</span>
-            </p>
-            <p className="text-xs text-[#85809d]">OUT OF THIS WORLD</p>
+          <div className="flex items-center gap-3">
+            <img src="/az-logo.png" alt="Anime Zone" className="h-12 w-12 rounded-2xl object-cover shadow-md" />
+            <div><p className="text-lg font-black tracking-wide">ANIME ZONE</p><p className="text-xs text-[#85809d]">OUT OF THIS WORLD</p></div>
           </div>
 
           <div className="flex items-center gap-3">
@@ -1607,33 +1859,6 @@ export default function Home() {
                 <p className="mt-4 text-center text-xs text-[#85809d]">
                   The countdown automatically resets for the next Saturday.
                 </p>
-              </div>
-            </section>
-
-            <section>
-              <div className="mb-4 flex items-center justify-between">
-                <h2 className="text-xl font-black">🔥 Trending Anime</h2>
-                <span className="text-xs font-semibold text-[#7664c2]">DISCOVER</span>
-              </div>
-              <div className="grid gap-4 sm:grid-cols-3">
-                {[
-                  { name: "Black Clover", emoji: "🍀", description: "Magic, rivalry and determination." },
-                  { name: "Solo Leveling", emoji: "⚔️", description: "A world of hunters and quests." },
-                  { name: "One Piece", emoji: "☠️", description: "Adventure across the seas." },
-                ].map((anime) => (
-                  <article
-                    key={anime.name}
-                    className="rounded-[1.5rem] border border-[#d9d4ff] bg-gradient-to-br from-[#f4f1ff] to-[#edf5ff] p-5 shadow-lg shadow-purple-950/40"
-                  >
-                    <div className="flex h-24 items-center justify-center rounded-2xl bg-gradient-to-br from-[#e6e3ff] via-[#e9efff] to-[#dff3ff] text-5xl">
-                      {anime.emoji}
-                    </div>
-                    <h3 className="mt-4 font-black">{anime.name}</h3>
-                    <p className="mt-1 text-sm text-[#6e6889]">
-                      {anime.description}
-                    </p>
-                  </article>
-                ))}
               </div>
             </section>
 
@@ -1769,48 +1994,106 @@ export default function Home() {
             </section>
           </div>
         ) : tab === "chat" ? (
-          <section className="space-y-6">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h1 className="text-3xl font-black">Anime Chat</h1>
-                <p className="mt-1 text-sm text-[#6e6889]">Your Anime Zone connections.</p>
-              </div>
-              <div className="flex items-center gap-2">
-                <button type="button" aria-label="View friend requests" title="Friend requests" onClick={() => document.getElementById("anime-friend-requests")?.scrollIntoView({ behavior: "smooth", block: "start" })} className="relative flex h-10 w-10 items-center justify-center rounded-xl border border-[#c9c2f5] bg-[#e9e7ff] text-lg text-[#41366f]">
-                  ♡
-                  {incomingRequests.length > 0 && <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-fuchsia-500 px-1 text-[10px] font-black text-white">{incomingRequests.length}</span>}
-                </button>
-              <button type="button" onClick={() => void loadFriendData()} disabled={friendsLoading} className="rounded-xl border border-[#c9c2f5] bg-[#e9e7ff] px-4 py-2 text-sm font-bold text-[#41366f] disabled:opacity-50">
-                {friendsLoading ? "Refreshing..." : "↻ Refresh"}
-              </button>
-              </div>
-            </div>
-
-            <div id="anime-friend-requests" className="scroll-mt-6 rounded-[1.7rem] border border-[#d9d4ff] bg-gradient-to-br from-white via-[#f7f5ff] to-[#eef6ff] p-5 shadow-lg shadow-purple-950/40 sm:p-6">
-              <div className="flex items-center justify-between gap-3">
-                <h2 className="text-xl font-black">Friend Requests</h2>
-                <span className="rounded-full bg-[#e4e1ff] px-3 py-1 text-xs font-bold text-[#6555a5]">{incomingRequests.length} NEW</span>
-              </div>
-              {incomingRequests.length === 0 ? (
-                <p className="mt-4 rounded-xl bg-[#f1f0ff] p-5 text-sm text-[#77718f]">No pending friend requests right now.</p>
-              ) : (
-                <div className="mt-4 space-y-3">
-                  {incomingRequests.map((request) => {
-                    const sender = friendSearchResults.find((person) => person.user_id === request.sender_id);
-                    return <div key={request.id} className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#d9d4ff] bg-[#f1f0ff] p-4">
-                      <div className="flex items-center gap-3"><div className="flex h-11 w-11 items-center justify-center overflow-hidden rounded-full bg-[#e4e1ff]">{sender?.avatar_url ? <img src={sender.avatar_url} alt="" className="h-full w-full object-cover" /> : "👤"}</div><div><p className="font-bold">Friend request</p><p className="text-xs text-[#77718f]">From an Anime Zone member</p></div></div>
-                      <div className="flex gap-2"><button type="button" onClick={() => void respondToFriendRequest(request.id, "accepted")} disabled={friendActionLoading === request.id} className="rounded-lg bg-[#8b5cf6] px-3 py-2 text-xs font-bold text-white">Accept</button><button type="button" onClick={() => void respondToFriendRequest(request.id, "declined")} disabled={friendActionLoading === request.id} className="rounded-lg border border-[#c9c2f5] px-3 py-2 text-xs font-bold text-[#6555a5]">Decline</button></div>
-                    </div>;
-                  })}
+          <section className="space-y-5 pb-8">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <img src="/az-logo.png" alt="Anime Zone Chat" className="h-12 w-12 rounded-2xl object-cover shadow-md" />
+                <div>
+                  <h1 className="text-3xl font-black">Anime Chat</h1>
+                  <p className="mt-1 text-sm text-[#6e6889]">Your private space to talk anime.</p>
                 </div>
-              )}
+              </div>
+              <button type="button" onClick={() => setFriendSearchOpen(true)} className="rounded-xl bg-[#8b5cf6] px-4 py-3 text-sm font-bold text-white shadow-md hover:bg-[#7c3aed]">＋ Find people</button>
             </div>
 
-            <div className="rounded-[1.7rem] border border-[#d9d4ff] bg-gradient-to-br from-white via-[#f7f5ff] to-[#eef6ff] p-5 shadow-lg shadow-purple-950/40 sm:p-6">
-              <div className="flex items-center justify-between gap-3"><h2 className="text-xl font-black">Friends</h2><span className="rounded-full bg-[#e4e1ff] px-3 py-1 text-xs font-bold text-[#6555a5]">{friends.length}</span></div>
-              {friendsLoading && friends.length === 0 ? <p className="mt-4 text-sm text-[#6e6889]">Loading friends...</p> : friends.length === 0 ? <div className="mt-4 rounded-xl border border-dashed border-[#c9c2f5] p-7 text-center"><p className="font-bold">Your friends list is empty</p><p className="mt-1 text-sm text-[#77718f]">Use the ♡+ button at the top to find Anime Zone members.</p></div> : <div className="mt-4 grid gap-3 sm:grid-cols-2">{friends.map((friend) => <div key={friend.user_id} className="flex items-center gap-3 rounded-2xl border border-[#d9d4ff] bg-[#f1f0ff] p-4"><div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[#e4e1ff]">{friend.avatar_url ? <img src={friend.avatar_url} alt="" className="h-full w-full object-cover" /> : <span>👤</span>}</div><div className="min-w-0"><p className="truncate font-bold"><AdminName value={friend.username} /></p><p className="truncate text-xs text-[#77718f]">@{friend.username}</p><p className="mt-1 text-xs text-[#8b7b9e]">Friends · messaging coming next</p></div></div>)}</div>}
+            <div className="grid min-h-[680px] gap-5 lg:grid-cols-[minmax(280px,360px)_1fr]">
+              <aside className="overflow-hidden rounded-[1.8rem] border border-[#d9d4ff] bg-white/90 shadow-lg shadow-violet-100">
+                <div className="border-b border-[#ebe8ff] p-5">
+                  <div className="flex items-center justify-between">
+                    <h2 className="text-xl font-black">People</h2>
+                    <button type="button" onClick={() => void loadFriendData()} disabled={friendsLoading} className="rounded-lg px-3 py-2 text-sm font-bold text-[#7561c8] hover:bg-[#f1f0ff]">{friendsLoading ? "…" : "↻"}</button>
+                  </div>
+                  <div className="mt-4 grid grid-cols-2 rounded-xl bg-[#f1f0ff] p-1">
+                    <button type="button" onClick={() => setChatSection("friends")} className={`rounded-lg px-3 py-3 text-sm font-black transition ${chatSection === "friends" ? "bg-white text-[#6555a5] shadow-sm" : "text-[#85809d]"}`}>Friends <span className="ml-1 text-xs">{friends.length}</span></button>
+                    <button type="button" onClick={() => setChatSection("requests")} className={`relative rounded-lg px-3 py-3 text-sm font-black transition ${chatSection === "requests" ? "bg-white text-[#6555a5] shadow-sm" : "text-[#85809d]"}`}>Requests {incomingRequests.length > 0 && <span className="ml-1 rounded-full bg-blue-600 px-2 py-0.5 text-[10px] text-white">{incomingRequests.length}+</span>}</button>
+                  </div>
+                </div>
+
+                <div className="max-h-[580px] space-y-1 overflow-y-auto p-3">
+                  {chatSection === "friends" ? (
+                    friendsLoading && friends.length === 0 ? <p className="p-5 text-sm text-[#85809d]">Loading friends…</p> :
+                    friends.length === 0 ? <div className="p-7 text-center"><p className="text-3xl">👥</p><p className="mt-3 font-bold">No friends yet</p><p className="mt-2 text-sm leading-6 text-[#85809d]">Add people from Anime Zone to start chatting.</p><button type="button" onClick={() => setFriendSearchOpen(true)} className="mt-4 rounded-xl bg-[#8b5cf6] px-4 py-2 text-sm font-bold text-white">Find friends</button></div> :
+                    friends.map((friend) => {
+                      const online = Boolean(friend.last_seen_at && Date.now() - new Date(friend.last_seen_at).getTime() < 90000);
+                      return <button type="button" key={friend.user_id} onClick={() => openDirectMessage(friend.user_id)} className={`flex w-full items-center gap-3 rounded-2xl p-3 text-left transition hover:bg-[#f4f2ff] ${selectedChatFriendId === friend.user_id ? "bg-[#eeeaff]" : ""}`}>
+                        <span className="relative h-12 w-12 shrink-0 overflow-hidden rounded-full bg-[#e9e7ff]">
+                          {friend.avatar_url ? <img src={friend.avatar_url} alt="" className="h-full w-full object-cover" /> : <span className="flex h-full w-full items-center justify-center font-black text-[#7561c8]">{friend.display_name?.charAt(0) || "?"}</span>}
+                          <span className={`absolute bottom-0 right-0 h-3.5 w-3.5 rounded-full border-2 border-white ${online ? "bg-emerald-500" : "bg-red-500"}`} />
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className={`block truncate font-black ${online ? "text-emerald-600" : "text-red-600"}`}>{friend.display_name || friend.username}</span>
+                          <span className="mt-1 block truncate text-xs text-[#85809d]">{online ? "Online" : friend.last_seen_at ? `Last seen ${new Date(friend.last_seen_at).toLocaleString()}` : "Offline"}</span>
+                        </span>
+                        {friend.user_id === selectedChatFriendId && <span className="text-xs font-bold text-[#8b5cf6]">Open</span>}
+                      </button>;
+                    })
+                  ) : (
+                    incomingRequests.length === 0 ? <p className="p-7 text-center text-sm text-[#85809d]">No pending friend requests.</p> :
+                    incomingRequests.map((request) => <div key={request.id} className="flex items-center gap-3 rounded-2xl p-3 hover:bg-[#f8f7ff]">
+                      <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#e9e7ff] text-lg">👤</span>
+                      <span className="min-w-0 flex-1"><span className="block font-bold">Anime Zone member</span><span className="text-xs text-[#85809d]">Wants to be your friend</span></span>
+                      <button type="button" title="Accept request" onClick={() => void respondToFriendRequest(request.id, "accepted")} disabled={friendActionLoading === request.id} className="flex h-9 w-9 items-center justify-center rounded-full bg-emerald-100 font-black text-emerald-700 hover:bg-emerald-200">✓</button>
+                      <button type="button" title="Decline request" onClick={() => void respondToFriendRequest(request.id, "declined")} disabled={friendActionLoading === request.id} className="flex h-9 w-9 items-center justify-center rounded-full bg-rose-100 font-black text-rose-700 hover:bg-rose-200">✕</button>
+                    </div>)
+                  )}
+                </div>
+              </aside>
+
+              <section className="flex min-h-[680px] min-w-0 flex-col overflow-hidden rounded-[1.8rem] border border-[#d9d4ff] bg-white/95 shadow-lg shadow-violet-100">
+                {selectedChatFriend ? <>
+                  <header className="flex items-center gap-3 border-b border-[#ebe8ff] px-5 py-4 sm:px-7">
+                    <span className="relative h-11 w-11 shrink-0 overflow-hidden rounded-full bg-[#e9e7ff]">
+                      {selectedChatFriend.avatar_url ? <img src={selectedChatFriend.avatar_url} alt="" className="h-full w-full object-cover" /> : <span className="flex h-full w-full items-center justify-center font-black text-[#7561c8]">{selectedChatFriend.display_name?.charAt(0) || "?"}</span>}
+                      <span className={`absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-white ${selectedChatFriend.last_seen_at && Date.now() - new Date(selectedChatFriend.last_seen_at).getTime() < 90000 ? "bg-emerald-500" : "bg-red-500"}`} />
+                    </span>
+                    <div className="min-w-0"><h2 className="truncate font-black">{selectedChatFriend.display_name || selectedChatFriend.username}</h2><p className="text-xs text-[#85809d]">{selectedChatFriend.last_seen_at && Date.now() - new Date(selectedChatFriend.last_seen_at).getTime() < 90000 ? "Online" : "Last seen " + (selectedChatFriend.last_seen_at ? new Date(selectedChatFriend.last_seen_at).toLocaleString() : "unknown")}</p></div>
+                    <span className="ml-auto rounded-full bg-[#f1f0ff] px-3 py-1 text-xs font-bold text-[#7561c8]">Anime Zone DM</span>
+                  </header>
+                  <div ref={chatScrollRef} className="flex-1 space-y-4 overflow-y-auto bg-gradient-to-b from-[#fcfbff] to-white p-5 sm:p-8">
+                    <div className="mx-auto mb-8 max-w-sm text-center"><img src="/az-logo.png" alt="Anime Zone" className="mx-auto h-14 w-14 rounded-2xl object-cover" /><p className="mt-3 font-black">Anime Zone</p><p className="mt-1 text-xs text-[#85809d]">This is the beginning of your conversation with {selectedChatFriend.display_name || selectedChatFriend.username}.</p></div>
+                    {chatLoading && chatMessages.length === 0 ? <p className="text-center text-sm text-[#85809d]">Loading messages…</p> : chatMessages.map((message) => {
+                      const mine = message.sender_id !== selectedChatFriend.user_id;
+                      return <div key={message.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}><div className={`max-w-[82%] rounded-3xl px-4 py-3 shadow-sm sm:max-w-[70%] ${mine ? "rounded-br-md bg-[#7954d8] text-white" : "rounded-bl-md bg-[#f0efff] text-[#30284e]"}`}><p className="whitespace-pre-wrap break-words text-sm leading-6">{message.content}</p><p className={`mt-1 text-right text-[10px] ${mine ? "text-white/70" : "text-[#85809d]"}`}>{new Date(message.created_at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}</p></div></div>;
+                    })}
+                  </div>
+                  {chatError && <p role="alert" className="px-5 py-2 text-sm text-red-600">{chatError}</p>}
+                  <form onSubmit={sendChatMessage} className="flex items-center gap-3 border-t border-[#ebe8ff] bg-white p-4 sm:p-5">
+                    <input value={chatDraft} onChange={(event) => setChatDraft(event.target.value)} maxLength={2000} placeholder="Message…" className="min-w-0 flex-1 rounded-full border border-[#ddd7ff] bg-[#f8f7ff] px-5 py-4 text-sm outline-none focus:border-[#9b83ef]" />
+                    <button type="submit" disabled={!chatDraft.trim() || chatSending} className="rounded-full bg-[#8b5cf6] px-6 py-4 text-sm font-black text-white transition hover:bg-[#7c3aed] disabled:opacity-50">{chatSending ? "Sending…" : "Send"}</button>
+                  </form>
+                </> : <div className="flex flex-1 flex-col items-center justify-center px-6 py-12 text-center"><img src="/az-logo.png" alt="Anime Zone Chat" className="h-20 w-20 rounded-3xl object-cover shadow-md" /><h2 className="mt-5 text-2xl font-black">Your Anime Zone chats</h2><p className="mt-2 max-w-sm text-sm leading-7 text-[#85809d]">Choose a friend from the list to open your private conversation. Your messages will appear here.</p></div>}
+              </section>
             </div>
-            {friendError && <p role="alert" className="break-words rounded-xl border border-red-400/20 bg-red-500/10 px-4 py-3 text-sm text-red-600">{friendError}</p>}
+            {friendError && <p role="alert" className="rounded-xl bg-red-500/10 px-4 py-3 text-sm text-red-600">{friendError}</p>}
+          </section>
+        ) : tab === "global" ? (
+          <section className="mx-auto max-w-5xl space-y-5 pb-8">
+            <header className="flex items-center gap-3">
+              <img src="/az-logo.png" alt="Anime Zone" className="h-12 w-12 rounded-2xl object-cover shadow-md" />
+              <div><h1 className="text-3xl font-black">Global Chat</h1><p className="text-sm text-[#6e6889]">One chat for the whole Anime Zone community.</p></div>
+              <button type="button" onClick={() => void loadGlobalMessages()} className="ml-auto rounded-xl border border-[#d9d4ff] bg-white px-4 py-2 text-sm font-bold text-[#7561c8]">↻ Refresh</button>
+            </header>
+            <div className="overflow-hidden rounded-[1.8rem] border border-[#d9d4ff] bg-white/95 shadow-lg shadow-violet-100">
+              <div className="flex items-center justify-between border-b border-[#ebe8ff] px-5 py-4"><div><h2 className="font-black">Anime Zone Community</h2><p className="text-xs text-[#85809d]">Messages are visible to signed-in members.</p></div><span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700">● LIVE</span></div>
+              <div ref={globalScrollRef} className="h-[min(62vh,650px)] min-h-[360px] space-y-4 overflow-y-auto bg-gradient-to-b from-[#fcfbff] to-white p-4 sm:p-7">
+                {globalLoading && globalMessages.length === 0 ? <p className="py-12 text-center text-sm text-[#85809d]">Loading Global Chat…</p> : globalMessages.length === 0 ? <div className="py-16 text-center"><img src="/az-logo.png" alt="" className="mx-auto h-16 w-16 rounded-2xl"/><p className="mt-4 font-black">Start the conversation</p><p className="mt-1 text-sm text-[#85809d]">Be the first to send a message.</p></div> : globalMessages.map((message) => {
+                  const mine = message.user_id === profile?.user_id;
+                  return <div key={message.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}><div className={`max-w-[88%] rounded-3xl px-4 py-3 shadow-sm sm:max-w-[75%] ${mine ? "rounded-br-md bg-[#7954d8] text-white" : "rounded-bl-md bg-[#f0efff] text-[#30284e]"}`}><p className={`mb-1 text-xs font-black ${mine ? "text-white/80" : "text-[#7656c7]"}`}>{mine ? "You" : message.username}</p><p className="whitespace-pre-wrap break-words text-sm leading-6">{message.content}</p><p className={`mt-1 text-right text-[10px] ${mine ? "text-white/70" : "text-[#85809d]"}`}>{new Date(message.created_at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}</p></div></div>;
+                })}
+              </div>
+              {globalError && <p role="alert" className="px-5 py-2 text-sm text-red-600">{globalError}</p>}
+              <form onSubmit={sendGlobalMessage} className="flex items-center gap-3 border-t border-[#ebe8ff] bg-white p-4 sm:p-5"><input value={globalDraft} onChange={(event) => setGlobalDraft(event.target.value)} maxLength={1000} placeholder="Message everyone…" className="min-w-0 flex-1 rounded-full border border-[#ddd7ff] bg-[#f8f7ff] px-5 py-4 text-sm outline-none focus:border-[#9b83ef]"/><button type="submit" disabled={!globalDraft.trim() || globalSending} className="rounded-full bg-[#8b5cf6] px-6 py-4 text-sm font-black text-white transition hover:bg-[#7c3aed] disabled:opacity-50">{globalSending ? "Sending…" : "Send"}</button></form>
+            </div>
           </section>
         ) : null}
       </div>
@@ -1838,7 +2121,7 @@ export default function Home() {
               />
             </div>
             <div className="mt-7 flex flex-wrap justify-center gap-3 text-sm font-bold">
-              <a className="rounded-xl bg-[#e9e7ff] px-4 py-3 text-[#51458e] hover:bg-[#dedaff]" href="https://www.youtube.com/@greenbutton" target="_blank" rel="noreferrer">▶ YouTube · @greenbutton</a>
+              <a className="rounded-xl bg-[#e9e7ff] px-4 py-3 text-[#51458e] hover:bg-[#dedaff]" href="https://www.youtube.com/@greenbuton" target="_blank" rel="noreferrer">▶ YouTube · @greenbutton</a>
               <a className="rounded-xl bg-[#e9e7ff] px-4 py-3 text-[#51458e] hover:bg-[#dedaff]" href="https://www.instagram.com/ootwtechh/" target="_blank" rel="noreferrer">◎ Instagram · @ootwtechh</a>
               <a className="rounded-xl bg-[#e9e7ff] px-4 py-3 text-[#51458e] hover:bg-[#dedaff]" href="https://www.tiktok.com/@ootwtech" target="_blank" rel="noreferrer">♪ TikTok · @ootwtech</a>
               <a className="rounded-xl bg-[#dfeeff] px-4 py-3 text-[#315c91] hover:bg-[#d1e6ff]" href="https://discord.gg/b5f67cE7v" target="_blank" rel="noreferrer">💬 Join our Discord</a>
@@ -2137,7 +2420,7 @@ export default function Home() {
       )}
 
       <nav className="fixed bottom-0 left-0 right-0 z-20 border-t border-[#d8edfa] bg-[#ffffff]/95 px-5 py-3 backdrop-blur">
-        <div className="mx-auto flex max-w-lg items-center justify-around">
+        <div className="mx-auto flex max-w-2xl items-center justify-around">
           <button
             onClick={() => setTab("lobby")}
             className={`flex flex-col items-center gap-1 rounded-2xl px-8 py-2 text-sm font-bold transition ${
@@ -2157,8 +2440,18 @@ export default function Home() {
                 : "text-[#91a9ba]"
             }`}
           >
-            <span className="text-xl">💬</span>
+            <span className="relative text-xl">💬
+              {incomingRequests.length > 0 && <span className="absolute -right-4 -top-3 min-w-5 rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-black leading-4 text-white">{incomingRequests.length}</span>}
+              {unreadMessageCount > 0 && <span className="absolute -bottom-3 -right-4 min-w-5 rounded-full bg-red-600 px-1.5 py-0.5 text-[10px] font-black leading-4 text-white">{unreadMessageCount}</span>}
+            </span>
             Chat
+          </button>
+          <button
+            onClick={() => setTab("global")}
+            className={`flex flex-col items-center gap-1 rounded-2xl px-5 py-2 text-sm font-bold transition ${tab === "global" ? "bg-[#e9e7ff] text-[#7561c8]" : "text-[#85809d]"}`}
+          >
+            <span className="text-xl">🌐</span>
+            Global
           </button>
           <button
             onClick={() => setTab("leaderboard")}
