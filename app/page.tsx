@@ -1799,199 +1799,64 @@ export default function Home() {
         </header>
 
         {tab === "lobby" ? (
-          <div className="space-y-10">
-            {/* WEEKLY ANNOUNCEMENT */}
-            <section className="rounded-[1.7rem] border border-[#d9d4ff] bg-gradient-to-br from-white via-[#f7f5ff] to-[#eef6ff] p-7 sm:p-8 shadow-lg shadow-purple-950/40">
-              <div className="flex items-center justify-between gap-3">
-                <h2 className="text-lg font-black">📢 Announcements</h2>
-                <span className="rounded-full bg-[#e4e1ff] px-3 py-1 text-xs font-bold text-[#6555a5]">
-                  OOTW STAFF
-                </span>
+          <div className="mx-auto grid max-w-7xl grid-cols-1 gap-6 pb-8 lg:grid-cols-[minmax(0,1fr)_320px]">
+            <section className="min-w-0 space-y-6">
+              <div className="rounded-3xl border border-[#ece8f4] bg-white p-5 shadow-sm sm:p-7">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-bold uppercase tracking-[.2em] text-[#8b5cf6]">Your anime community</p>
+                    <h1 className="mt-2 text-3xl font-black tracking-tight text-[#282438] sm:text-4xl">Welcome back, {profile?.display_name || username || "Anime fan"}.</h1>
+                    <p className="mt-2 text-sm text-[#817b91]">See what's happening across Anime Zone today.</p>
+                  </div>
+                  <button type="button" onClick={() => setTab("global")} className="rounded-full bg-[#8055d6] px-5 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-[#7045c5]">Join Global Chat <span aria-hidden="true">→</span></button>
+                </div>
+                <div className="mt-6 flex flex-wrap items-center gap-4 border-t border-[#f0edf5] pt-4 text-xs font-semibold text-[#777184]">
+                  <span><span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-emerald-500" />{onlineNow} members online</span>
+                  <span>{siteVisits.toLocaleString()} community visits</span>
+                  <span>Out of this world ✦</span>
+                </div>
               </div>
 
-              <div className="mt-4 rounded-2xl bg-[#e9e7ff] p-5">
-                <div className="flex items-center gap-2">
-                  <span className="text-xl">📣</span>
-                  <p className="font-black">Official Announcement</p>
+              <section className="overflow-hidden rounded-3xl border border-[#ece8f4] bg-white shadow-sm">
+                <div className="flex items-center justify-between border-b border-[#f0edf5] px-5 py-4 sm:px-6">
+                  <div><p className="text-xs font-bold uppercase tracking-[.18em] text-[#8b5cf6]">Happening now</p><h2 className="mt-1 text-xl font-black text-[#282438]">Community conversation</h2></div>
+                  <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700">● LIVE</span>
                 </div>
-
-                <p className="mt-3 text-sm leading-6 text-[#6e6889]">
-                  Admins/staff will post announcements here, so stay tuned!
-                  Check back regularly to keep up with everything happening
-                  in OOTW Anime Zone.
-                </p>
-              </div>
-
-              <div className="mt-5 rounded-2xl border border-[#d9d4ff] bg-[#ffffff] p-5">
-                <div className="text-center">
-                  <p className="text-xs font-black uppercase tracking-[0.2em] text-[#7664c2]">
-                    Next weekly update
-                  </p>
-                  <h3 className="mt-2 text-xl font-black">
-                    ✦ Saturday Update
-                  </h3>
-                  <p className="mt-1 text-xs text-[#85809d]">
-                    New updates every Saturday · az time
-                  </p>
-                </div>
-
-                <div className="mt-5 grid grid-cols-4 gap-2 sm:gap-4">
-                  {[
-                    { label: "Days", value: countdown.days },
-                    { label: "Hours", value: countdown.hours },
-                    { label: "Minutes", value: countdown.minutes },
-                    { label: "Seconds", value: countdown.seconds },
-                  ].map((item) => (
-                    <div
-                      key={item.label}
-                      className="rounded-xl bg-[#e9e7ff] px-2 py-4 text-center"
-                    >
-                      <p className="text-2xl font-black tabular-nums text-[#7561c8] sm:text-3xl">
-                        {String(item.value).padStart(2, "0")}
-                      </p>
-                      <p className="mt-1 text-[10px] font-bold uppercase tracking-wider text-[#77718f] sm:text-xs">
-                        {item.label}
-                      </p>
-                    </div>
-                  ))}
-                </div>
-
-                <p className="mt-4 text-center text-xs text-[#85809d]">
-                  The countdown automatically resets for the next Saturday.
-                </p>
-              </div>
-            </section>
-
-            <section className="rounded-[1.7rem] border border-[#d9d4ff] bg-gradient-to-br from-white via-[#f7f5ff] to-[#eef6ff] p-5 shadow-lg shadow-violet-100 sm:p-6">
-              <p className="text-xs font-black uppercase tracking-[0.22em] text-[#7561c8]">Community decides</p>
-              <h2 className="mt-2 text-2xl font-black">🗳️ Monthly Anime Theme Vote</h2>
-              <p className="mt-2 max-w-2xl text-sm leading-6 text-[#686184]">Vote for the anime you want Anime Zone to celebrate next month. The anime with the most votes becomes our site-wide monthly theme. You can change your vote before the month ends.</p>
-              <div className="mt-5 grid gap-3 sm:grid-cols-2">
-                {monthlyVotes.map((item, index) => <button key={item.anime_name} type="button" disabled={monthlyVoteLoading} onClick={() => void castMonthlyAnimeVote(item.anime_name)} className={`rounded-2xl border p-4 text-left transition hover:-translate-y-0.5 disabled:opacity-60 ${item.my_vote ? "border-violet-400 bg-violet-100" : "border-[#d9d4ff] bg-white hover:bg-[#f1efff]"}`}><div className="flex items-center justify-between gap-2"><span className="font-black text-[#393158]">{index + 1}. {item.anime_name}</span><span className="rounded-full bg-[#e7e3ff] px-3 py-1 text-xs font-black text-[#6555a5]">{item.votes} votes</span></div><div className="mt-3 h-2 overflow-hidden rounded-full bg-[#e9e7f7]"><div className="h-full rounded-full bg-gradient-to-r from-[#8b7be8] to-[#80bce9]" style={{width: `${Math.max(0, ...monthlyVotes.map(v => v.votes)) ? item.votes / Math.max(1, ...monthlyVotes.map(v => v.votes)) * 100 : 0}%`}} /></div><p className="mt-2 text-xs font-bold text-[#7561c8]">{item.my_vote ? "✓ Your vote" : "Vote for this anime →"}</p></button>)}
-              </div>
-              {monthlyVoteLoading && <p className="mt-3 text-xs text-[#77718f]">Updating votes...</p>}
-              {monthlyVoteError && <p role="alert" className="mt-3 rounded-xl bg-red-50 p-3 text-sm text-red-600">{monthlyVoteError}</p>}
-              <p className="mt-4 text-xs text-[#85809d]">Voting resets automatically each calendar month. Results are shared across all members.</p>
-            </section>
-
-            <section className="rounded-[1.7rem] border border-[#d9d4ff] bg-gradient-to-br from-white via-[#f7f5ff] to-[#eef6ff] p-5 shadow-lg shadow-purple-950/40 sm:p-6">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <p className="text-xs font-black uppercase tracking-[0.22em] text-[#7561c8]">
-                    Shape the next update
-                  </p>
-                  <h2 className="mt-2 text-2xl font-black">💡 Community Feed</h2>
-                  <p className="mt-2 max-w-xl text-sm leading-6 text-[#6e6889]">
-                    Suggest features, improvements or ideas you would love to see in Anime Zone.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => void loadSuggestions()}
-                  disabled={suggestionsLoading}
-                  className="rounded-xl border border-[#c9c2f5] bg-[#e9e7ff] px-4 py-2 text-xs font-bold text-[#41366f] transition hover:bg-[#e4e1ff] disabled:opacity-50"
-                >
-                  {suggestionsLoading ? "Refreshing..." : "↻ Refresh"}
+                <button type="button" onClick={() => setTab("global")} className="group block w-full px-5 py-6 text-left transition hover:bg-[#fbfaff] sm:px-6">
+                  <div className="flex items-start gap-3">
+                    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#f0eaff] text-xl">🌐</div>
+                    <div className="min-w-0 flex-1"><p className="font-bold text-[#302b3d]">Anime Zone Global Chat</p><p className="mt-1 text-sm leading-6 text-[#817b91]">Jump into the live conversation with anime fans around the world. Messages update in real time and chat history is saved.</p><span className="mt-3 inline-flex items-center gap-2 text-sm font-bold text-[#8055d6]">Open conversation <span className="transition group-hover:translate-x-1">→</span></span></div>
+                  </div>
                 </button>
-              </div>
+              </section>
 
-              <div className="mt-5 rounded-2xl border border-[#c9c2f5] bg-[#f1f0ff] p-4">
-                <label htmlFor="suggestion-input" className="mb-2 block text-sm font-bold text-[#41366f]">
-                  Share your suggestion
-                </label>
-                <textarea
-                  id="suggestion-input"
-                  value={suggestionText}
-                  onChange={(event) => {
-                    setSuggestionText(event.target.value);
-                    setSuggestionError("");
-                  }}
-                  maxLength={300}
-                  rows={3}
-                  placeholder="What should we add to Anime Zone?"
-                  className="w-full resize-y rounded-xl border border-[#d9d4ff] bg-[#f0efff] px-4 py-3 text-sm text-white outline-none placeholder:text-[#85809d] focus:border-[#c084fc]"
-                />
-                <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-                  <span className="text-xs text-[#77718f]">{suggestionText.length}/300 characters</span>
-                  <button
-                    type="button"
-                    onClick={() => void postSuggestion()}
-                    disabled={postingSuggestion || !suggestionText.trim()}
-                    className="rounded-xl bg-gradient-to-r from-[#8b5cf6] to-[#d946ef] px-5 py-3 text-sm font-black text-white shadow-lg shadow-purple-950/40 transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {postingSuggestion ? "Posting..." : "Post suggestion →"}
-                  </button>
+              <section className="rounded-3xl border border-[#ece8f4] bg-white p-5 shadow-sm sm:p-6">
+                <div className="flex flex-wrap items-end justify-between gap-3">
+                  <div><p className="text-xs font-bold uppercase tracking-[.18em] text-[#8b5cf6]">Community decides</p><h2 className="mt-1 text-2xl font-black text-[#282438]">🗳️ Monthly Anime</h2><p className="mt-1 text-sm text-[#817b91]">Vote for the anime that should represent Anime Zone this month.</p></div>
+                  <span className="rounded-full bg-[#f3efff] px-3 py-1.5 text-xs font-bold text-[#7954c7]">{getSouthAfricaMonthKey()}</span>
                 </div>
-              </div>
-
-              {suggestionError && (
-                <p role="alert" className="mt-4 break-words rounded-xl border border-red-400/20 bg-red-500/10 px-4 py-3 text-sm text-red-200">
-                  {suggestionError}
-                </p>
-              )}
-
-              <div className="mt-6 flex items-center justify-between gap-3">
-                <h3 className="font-black">Latest suggestions</h3>
-                <span className="rounded-full bg-[#e4e1ff] px-3 py-1 text-xs font-bold text-[#6555a5]">
-                  {suggestions.length} {suggestions.length === 1 ? "POST" : "POSTS"}
-                </span>
-              </div>
-
-              {suggestionsLoading && suggestions.length === 0 ? (
-                <p className="py-8 text-center text-sm text-[#6e6889]">Loading suggestions...</p>
-              ) : suggestions.length === 0 ? (
-                <div className="mt-4 rounded-2xl border border-dashed border-[#c9c2f5] bg-[#f5f4ff] px-5 py-8 text-center">
-                  <div className="text-3xl">🌌</div>
-                  <p className="mt-3 font-bold">No suggestions yet</p>
-                  <p className="mt-1 text-sm text-[#77718f]">Be the first to share an idea with the community.</p>
+                <div className="mt-5 grid gap-2 sm:grid-cols-2">
+                  {monthlyVotes.map((item, index) => <button key={item.anime_name} type="button" disabled={monthlyVoteLoading || isGuestAccount} onClick={() => void castMonthlyAnimeVote(item.anime_name)} className={`rounded-2xl border p-4 text-left transition hover:border-[#bda6ed] disabled:cursor-not-allowed disabled:opacity-60 ${item.my_vote ? "border-[#9b7be1] bg-[#f5f0ff]" : "border-[#eeeaf4] bg-white hover:bg-[#fbf9ff]"}`}><div className="flex items-center justify-between gap-2"><span className="font-bold text-[#302b3d]">{index + 1}. {item.anime_name}</span><span className="rounded-full bg-[#f0eaff] px-2.5 py-1 text-xs font-bold text-[#7954c7]">{item.votes}</span></div><div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[#f0edf5]"><div className="h-full rounded-full bg-[#8b5cf6]" style={{width: `${Math.max(0, ...monthlyVotes.map(v => v.votes)) ? item.votes / Math.max(1, ...monthlyVotes.map(v => v.votes)) * 100 : 0}%`}} /></div><p className="mt-2 text-xs font-semibold text-[#8055d6]">{item.my_vote ? "✓ Your vote" : isGuestAccount ? "Sign in to vote" : "Vote for this anime"}</p></button>)}
                 </div>
-              ) : (
-                <div className="mt-4 space-y-3">
-                  {suggestions.map((suggestion) => (
-                    <article key={suggestion.id} className="rounded-2xl border border-[#d9d4ff] bg-[#ffffff]/90 p-4">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <p className="text-sm font-black text-[#41366f]">@<AdminName value={suggestion.username} /></p>
-                        <time dateTime={suggestion.created_at} className="text-xs text-[#85809d]">
-                          {new Date(suggestion.created_at).toLocaleString()}
-                        </time>
-                      </div>
-                      <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-6 text-[#e5dced]">
-                        {suggestion.content}
-                      </p>
-                      <div className="mt-4 flex flex-wrap items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => void voteOnSuggestion(suggestion.id, 1)}
-                          aria-pressed={suggestion.myVote === 1}
-                          className={`flex items-center gap-2 rounded-xl border px-4 py-2 text-sm font-bold transition ${suggestion.myVote === 1 ? "border-emerald-400/50 bg-emerald-400/15 text-emerald-200" : "border-[#d9d4ff] bg-[#e9e7ff] text-[#cbbbdc] hover:border-emerald-400/40"}`}
-                        >
-                          <span>👍</span><span>{suggestion.likes}</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void voteOnSuggestion(suggestion.id, -1)}
-                          aria-pressed={suggestion.myVote === -1}
-                          className={`flex items-center gap-2 rounded-xl border px-4 py-2 text-sm font-bold transition ${suggestion.myVote === -1 ? "border-rose-400/50 bg-rose-400/15 text-rose-200" : "border-[#d9d4ff] bg-[#e9e7ff] text-[#cbbbdc] hover:border-rose-400/40"}`}
-                        >
-                          <span>👎</span><span>{suggestion.dislikes}</span>
-                        </button>
-                        {isAdmin && (
-                          <button
-                            type="button"
-                            onClick={() => void deleteSuggestion(suggestion.id)}
-                            disabled={deletingSuggestionId === suggestion.id}
-                            className="ml-auto rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-sm font-bold text-rose-700 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-50"
-                            aria-label={`Delete suggestion by ${suggestion.username}`}
-                          >
-                            {deletingSuggestionId === suggestion.id ? "Deleting..." : "🗑 Delete"}
-                          </button>
-                        )}
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              )}
+                {monthlyVotes.length === 0 && !monthlyVoteLoading && <p className="mt-4 text-sm text-[#817b91]">Monthly voting options are loading or not available yet.</p>}
+                {monthlyVoteLoading && <p className="mt-3 text-xs text-[#817b91]">Updating votes…</p>}
+                {monthlyVoteError && <p role="alert" className="mt-3 rounded-xl bg-red-50 p-3 text-sm text-red-600">{monthlyVoteError}</p>}
+                <p className="mt-4 text-xs text-[#9993a5]">Voting resets each calendar month. You can change your vote before the month ends.</p>
+              </section>
+
+              <section className="rounded-3xl border border-[#ece8f4] bg-white p-5 shadow-sm sm:p-6">
+                <div className="flex items-center justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-[.18em] text-[#8b5cf6]">Community ideas</p><h2 className="mt-1 text-xl font-black text-[#282438]">Help shape Anime Zone</h2></div><button type="button" onClick={() => void loadSuggestions()} disabled={suggestionsLoading} className="rounded-full px-3 py-2 text-xs font-bold text-[#8055d6] hover:bg-[#f5f0ff]">{suggestionsLoading ? "Loading…" : "Refresh"}</button></div>
+                {!isGuestAccount && <div className="mt-4 rounded-2xl bg-[#faf8fd] p-3"><textarea value={suggestionText} onChange={(event) => {setSuggestionText(event.target.value);setSuggestionError("");}} maxLength={300} rows={2} placeholder="Suggest a feature or improvement…" className="w-full resize-y bg-transparent px-2 py-1 text-sm text-[#302b3d] outline-none placeholder:text-[#aaa4b2]"/><div className="flex items-center justify-between"><span className="text-xs text-[#9993a5]">{suggestionText.length}/300</span><button type="button" onClick={() => void postSuggestion()} disabled={postingSuggestion || !suggestionText.trim()} className="rounded-full bg-[#8055d6] px-4 py-2 text-xs font-bold text-white disabled:opacity-50">{postingSuggestion ? "Sending…" : "Share idea"}</button></div></div>}
+                {suggestionError && <p role="alert" className="mt-3 text-sm text-red-600">{suggestionError}</p>}
+                <div className="mt-4 divide-y divide-[#f0edf5]">{suggestions.slice(0,5).map((item) => <article key={item.id} className="py-4 first:pt-1"><div className="flex items-center justify-between gap-3"><span className="text-sm font-bold text-[#302b3d]">@{item.username}</span><time className="text-xs text-[#9993a5]">{new Date(item.created_at).toLocaleDateString()}</time></div><p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-[#5f596c]">{item.content}</p><div className="mt-3 flex gap-3 text-xs"><button type="button" onClick={() => void voteOnSuggestion(item.id, 1)} className={`font-bold ${item.myVote === 1 ? "text-[#8055d6]" : "text-[#8e879b]"}`}>↑ {item.likes}</button><button type="button" onClick={() => void voteOnSuggestion(item.id, -1)} className={`font-bold ${item.myVote === -1 ? "text-rose-600" : "text-[#8e879b]"}`}>↓ {item.dislikes}</button>{isAdmin && <button type="button" onClick={() => void deleteSuggestion(item.id)} disabled={deletingSuggestionId === item.id} className="ml-auto font-bold text-rose-600">Delete</button>}</div></article>)}{suggestions.length === 0 && <p className="py-6 text-center text-sm text-[#9993a5]">No community ideas yet. Start one.</p>}</div>
+              </section>
             </section>
+
+            <aside className="space-y-5 lg:sticky lg:top-5 lg:self-start">
+              <section className="rounded-3xl border border-[#ece8f4] bg-white p-5 shadow-sm"><h2 className="font-black text-[#302b3d]">Your space</h2><div className="mt-4 space-y-1"><button type="button" onClick={() => setTab("global")} className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-semibold text-[#5f596c] hover:bg-[#f7f3ff]"><span className="text-lg">🌐</span> Global Chat <span className="ml-auto text-[#8055d6]">→</span></button><button type="button" onClick={() => setTab("chat")} className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-semibold text-[#5f596c] hover:bg-[#f7f3ff]"><span className="text-lg">👥</span> Friends & messages <span className="ml-auto text-[#8055d6]">→</span></button><button type="button" onClick={() => setFriendSearchOpen(true)} className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-semibold text-[#5f596c] hover:bg-[#f7f3ff]"><span className="text-lg">＋</span> Find people <span className="ml-auto text-[#8055d6]">→</span></button></div></section>
+              <section className="rounded-3xl border border-[#ece8f4] bg-white p-5 shadow-sm"><div className="flex items-center justify-between"><h2 className="font-black text-[#302b3d]">Announcements</h2><span className="rounded-full bg-[#f3efff] px-2.5 py-1 text-[10px] font-bold text-[#8055d6]">OOTW</span></div><p className="mt-3 text-sm leading-6 text-[#817b91]">Official Anime Zone updates and community news will appear here.</p><div className="mt-4 rounded-2xl bg-[#faf8fd] p-3"><p className="text-xs font-bold text-[#8055d6]">NEXT WEEKLY UPDATE</p><p className="mt-1 font-black text-[#302b3d]">Saturday Update</p><div className="mt-3 grid grid-cols-4 gap-1.5">{[{label:"D",value:countdown.days},{label:"H",value:countdown.hours},{label:"M",value:countdown.minutes},{label:"S",value:countdown.seconds}].map((item)=><div key={item.label} className="rounded-lg bg-white p-2 text-center"><p className="text-lg font-black tabular-nums text-[#8055d6]">{String(item.value).padStart(2,"0")}</p><p className="text-[9px] font-bold text-[#9993a5]">{item.label}</p></div>)}</div></div></section>
+              <section className="rounded-3xl border border-[#ece8f4] bg-white p-5 shadow-sm"><h2 className="font-black text-[#302b3d]">Community status</h2><p className="mt-3 text-sm text-[#817b91]"><span className="mr-2 inline-block h-2 w-2 rounded-full bg-emerald-500" />{onlineNow} online now</p><p className="mt-2 text-sm text-[#817b91]">{friends.length} friends connected</p></section>
+            </aside>
           </div>
         ) : tab === "chat" ? (
           <section className="space-y-5 pb-8">
@@ -2077,23 +1942,22 @@ export default function Home() {
             {friendError && <p role="alert" className="rounded-xl bg-red-500/10 px-4 py-3 text-sm text-red-600">{friendError}</p>}
           </section>
         ) : tab === "global" ? (
-          <section className="mx-auto max-w-5xl space-y-5 pb-8">
-            <header className="flex items-center gap-3">
-              <img src="/az-logo.png" alt="Anime Zone" className="h-12 w-12 rounded-2xl object-cover shadow-md" />
-              <div><h1 className="text-3xl font-black">Global Chat</h1><p className="text-sm text-[#6e6889]">One chat for the whole Anime Zone community.</p></div>
-              <button type="button" onClick={() => void loadGlobalMessages()} className="ml-auto rounded-xl border border-[#d9d4ff] bg-white px-4 py-2 text-sm font-bold text-[#7561c8]">↻ Refresh</button>
+          <section className="fixed inset-x-0 bottom-[76px] top-[82px] z-10 flex min-h-0 flex-col bg-white md:static md:mx-auto md:mb-6 md:h-[calc(100dvh-190px)] md:max-w-6xl md:rounded-3xl md:border md:border-[#ece8f4] md:shadow-sm">
+            <header className="flex shrink-0 items-center gap-3 border-b border-[#f0edf5] bg-white px-4 py-3 sm:px-6 sm:py-4 md:rounded-t-3xl">
+              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[#f1eaff] text-xl">🌐</div>
+              <div className="min-w-0"><h1 className="font-black text-[#282438]">Global Chat</h1><p className="text-xs text-[#8b8497]">Anime Zone community · Saved messages</p></div>
+              <span className="ml-auto rounded-full bg-emerald-50 px-3 py-1 text-[11px] font-bold text-emerald-700">● LIVE</span>
+              <button type="button" onClick={() => void loadGlobalMessages()} aria-label="Refresh chat" className="rounded-full px-3 py-2 text-sm font-bold text-[#8055d6] hover:bg-[#f7f3ff]">↻</button>
             </header>
-            <div className="overflow-hidden rounded-[1.8rem] border border-[#d9d4ff] bg-white/95 shadow-lg shadow-violet-100">
-              <div className="flex items-center justify-between border-b border-[#ebe8ff] px-5 py-4"><div><h2 className="font-black">Anime Zone Community</h2><p className="text-xs text-[#85809d]">Messages are visible to signed-in members.</p></div><span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700">● LIVE</span></div>
-              <div ref={globalScrollRef} className="h-[min(62vh,650px)] min-h-[360px] space-y-4 overflow-y-auto bg-gradient-to-b from-[#fcfbff] to-white p-4 sm:p-7">
-                {globalLoading && globalMessages.length === 0 ? <p className="py-12 text-center text-sm text-[#85809d]">Loading Global Chat…</p> : globalMessages.length === 0 ? <div className="py-16 text-center"><img src="/az-logo.png" alt="" className="mx-auto h-16 w-16 rounded-2xl"/><p className="mt-4 font-black">Start the conversation</p><p className="mt-1 text-sm text-[#85809d]">Be the first to send a message.</p></div> : globalMessages.map((message) => {
-                  const mine = message.user_id === profile?.user_id;
-                  return <div key={message.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}><div className={`max-w-[88%] rounded-3xl px-4 py-3 shadow-sm sm:max-w-[75%] ${mine ? "rounded-br-md bg-[#7954d8] text-white" : "rounded-bl-md bg-[#f0efff] text-[#30284e]"}`}><p className={`mb-1 text-xs font-black ${mine ? "text-white/80" : "text-[#7656c7]"}`}>{mine ? "You" : message.username}</p><p className="whitespace-pre-wrap break-words text-sm leading-6">{message.content}</p><p className={`mt-1 text-right text-[10px] ${mine ? "text-white/70" : "text-[#85809d]"}`}>{new Date(message.created_at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}</p></div></div>;
-                })}
-              </div>
-              {globalError && <p role="alert" className="px-5 py-2 text-sm text-red-600">{globalError}</p>}
-              <form onSubmit={sendGlobalMessage} className="flex items-center gap-3 border-t border-[#ebe8ff] bg-white p-4 sm:p-5"><input value={globalDraft} onChange={(event) => setGlobalDraft(event.target.value)} maxLength={1000} placeholder="Message everyone…" className="min-w-0 flex-1 rounded-full border border-[#ddd7ff] bg-[#f8f7ff] px-5 py-4 text-sm outline-none focus:border-[#9b83ef]"/><button type="submit" disabled={!globalDraft.trim() || globalSending} className="rounded-full bg-[#8b5cf6] px-6 py-4 text-sm font-black text-white transition hover:bg-[#7c3aed] disabled:opacity-50">{globalSending ? "Sending…" : "Send"}</button></form>
+            <div ref={globalScrollRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain bg-[#fbfaff] px-3 py-5 sm:px-6 md:px-8">
+              <div className="mx-auto mb-5 max-w-md text-center"><p className="text-xs font-bold uppercase tracking-[.16em] text-[#9a8ab5]">Welcome to the conversation</p><p className="mt-1 text-xs text-[#aaa3b3]">Be respectful. Keep it anime-friendly.</p></div>
+              {globalLoading && globalMessages.length === 0 ? <p className="py-12 text-center text-sm text-[#85809d]">Loading messages…</p> : globalMessages.length === 0 ? <div className="py-16 text-center"><p className="text-4xl">💬</p><p className="mt-3 font-bold text-[#302b3d]">It's quiet in here</p><p className="mt-1 text-sm text-[#9993a5]">Start the first conversation.</p></div> : globalMessages.map((message) => {
+                const mine = message.user_id === profile?.user_id;
+                return <div key={message.id} className={`flex w-full ${mine ? "justify-end" : "justify-start"}`}><div className={`w-fit max-w-[88%] sm:max-w-[72%] ${mine ? "items-end" : "items-start"}`}><p className={`mb-1 px-2 text-[11px] font-bold ${mine ? "text-right text-[#8b5cf6]" : "text-[#6d647b]"}`}>{mine ? "You" : message.username}</p><div className={`rounded-2xl px-4 py-3 shadow-sm ${mine ? "rounded-br-md bg-[#8055d6] text-white" : "rounded-bl-md border border-[#eeeaf4] bg-white text-[#302b3d]"}`}><p className="whitespace-pre-wrap break-words text-[14px] leading-6">{message.content}</p></div><p className={`mt-1 px-2 text-[10px] text-[#aaa3b3] ${mine ? "text-right" : ""}`}>{new Date(message.created_at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}</p></div></div>;
+              })}
             </div>
+            {globalError && <p role="alert" className="shrink-0 bg-red-50 px-4 py-2 text-xs text-red-600">{globalError}</p>}
+            <form onSubmit={sendGlobalMessage} className="flex shrink-0 items-end gap-2 border-t border-[#f0edf5] bg-white px-3 py-3 pb-[max(12px,env(safe-area-inset-bottom))] sm:px-5 md:rounded-b-3xl"><textarea value={globalDraft} onChange={(event) => setGlobalDraft(event.target.value)} maxLength={1000} rows={1} placeholder="Write a message to everyone…" className="max-h-28 min-h-12 min-w-0 flex-1 resize-y rounded-2xl border border-[#e9e3f1] bg-[#faf8fd] px-4 py-3 text-sm text-[#302b3d] outline-none placeholder:text-[#aaa3b3] focus:border-[#b49add]"/><button type="submit" disabled={!globalDraft.trim() || globalSending} className="flex h-12 shrink-0 items-center justify-center rounded-2xl bg-[#8055d6] px-5 text-sm font-bold text-white transition hover:bg-[#7045c5] disabled:opacity-50">{globalSending ? "…" : "Send"}</button></form>
           </section>
         ) : null}
       </div>
@@ -2121,7 +1985,7 @@ export default function Home() {
               />
             </div>
             <div className="mt-7 flex flex-wrap justify-center gap-3 text-sm font-bold">
-              <a className="rounded-xl bg-[#e9e7ff] px-4 py-3 text-[#51458e] hover:bg-[#dedaff]" href="https://www.youtube.com/@greenbuton" target="_blank" rel="noreferrer">▶ YouTube · @greenbutton</a>
+              <a className="rounded-xl bg-[#e9e7ff] px-4 py-3 text-[#51458e] hover:bg-[#dedaff]" href="https://www.youtube.com/@greenbutton" target="_blank" rel="noreferrer">▶ YouTube · @greenbutton</a>
               <a className="rounded-xl bg-[#e9e7ff] px-4 py-3 text-[#51458e] hover:bg-[#dedaff]" href="https://www.instagram.com/ootwtechh/" target="_blank" rel="noreferrer">◎ Instagram · @ootwtechh</a>
               <a className="rounded-xl bg-[#e9e7ff] px-4 py-3 text-[#51458e] hover:bg-[#dedaff]" href="https://www.tiktok.com/@ootwtech" target="_blank" rel="noreferrer">♪ TikTok · @ootwtech</a>
               <a className="rounded-xl bg-[#dfeeff] px-4 py-3 text-[#315c91] hover:bg-[#d1e6ff]" href="https://discord.gg/b5f67cE7v" target="_blank" rel="noreferrer">💬 Join our Discord</a>
@@ -2419,11 +2283,11 @@ export default function Home() {
         </div>
       )}
 
-      <nav className="fixed bottom-0 left-0 right-0 z-20 border-t border-[#d8edfa] bg-[#ffffff]/95 px-5 py-3 backdrop-blur">
-        <div className="mx-auto flex max-w-2xl items-center justify-around">
+      <nav className="fixed bottom-0 left-0 right-0 z-30 border-t border-[#ece8f4] bg-white/95 px-2 pb-[max(8px,env(safe-area-inset-bottom))] pt-2 backdrop-blur">
+        <div className="mx-auto flex max-w-3xl items-center justify-around">
           <button
             onClick={() => setTab("lobby")}
-            className={`flex flex-col items-center gap-1 rounded-2xl px-8 py-2 text-sm font-bold transition ${
+            className={`flex flex-col items-center gap-1 rounded-xl px-3 py-2 text-xs font-bold transition ${
               tab === "lobby"
                 ? "bg-[#e4f5ff] text-[#7561c8]"
                 : "text-[#91a9ba]"
@@ -2434,7 +2298,7 @@ export default function Home() {
           </button>
           <button
             onClick={() => setTab("chat")}
-            className={`flex flex-col items-center gap-1 rounded-2xl px-8 py-2 text-sm font-bold transition ${
+            className={`flex flex-col items-center gap-1 rounded-xl px-3 py-2 text-xs font-bold transition ${
               tab === "chat"
                 ? "bg-[#e4f5ff] text-[#7561c8]"
                 : "text-[#91a9ba]"
@@ -2448,14 +2312,14 @@ export default function Home() {
           </button>
           <button
             onClick={() => setTab("global")}
-            className={`flex flex-col items-center gap-1 rounded-2xl px-5 py-2 text-sm font-bold transition ${tab === "global" ? "bg-[#e9e7ff] text-[#7561c8]" : "text-[#85809d]"}`}
+            className={`flex flex-col items-center gap-1 rounded-xl px-3 py-2 text-xs font-bold transition ${tab === "global" ? "bg-[#e9e7ff] text-[#7561c8]" : "text-[#85809d]"}`}
           >
             <span className="text-xl">🌐</span>
             Global
           </button>
           <button
             onClick={() => setTab("leaderboard")}
-            className={`flex flex-col items-center gap-1 rounded-2xl px-5 py-2 text-sm font-bold transition ${tab === "leaderboard" ? "bg-[#e9e7ff] text-[#7561c8]" : "text-[#85809d]"}`}
+            className={`flex flex-col items-center gap-1 rounded-xl px-3 py-2 text-xs font-bold transition ${tab === "leaderboard" ? "bg-[#e9e7ff] text-[#7561c8]" : "text-[#85809d]"}`}
           >
             <span className="text-xl">🏆</span>
             Leaderboard
