@@ -2013,16 +2013,7 @@ export default function Home() {
         </div>
       )}
 
-      <footer className="relative z-10 mx-auto mb-8 mt-8 max-w-5xl px-6 text-center">
-        <p className="text-sm font-black text-[#51458e]">OOTW · ANIME ZONE</p>
-        <div className="mt-3 flex flex-wrap justify-center gap-4 text-xs font-bold text-[#7561c8]">
-          <a href="https://discord.gg/b5f67cE7v" target="_blank" rel="noreferrer">Discord</a>
-          <a href="https://www.youtube.com/@greenbutton" target="_blank" rel="noreferrer">YouTube · @greenbutton</a>
-          <a href="https://www.instagram.com/ootwtechh/" target="_blank" rel="noreferrer">Instagram · @ootwtechh</a>
-          <a href="https://www.tiktok.com/@ootwtech" target="_blank" rel="noreferrer">TikTok · @ootwtech</a>
-          <a href="mailto:agentcube1101@gmail.com">Email · agentcube1101@gmail.com</a>
-        </div>
-      </footer>
+
 
       {profileMenuOpen && (
         <div
