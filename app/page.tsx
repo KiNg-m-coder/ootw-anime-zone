@@ -63,6 +63,17 @@ type GlobalMessage = {
   username: string;
   content: string;
   created_at: string;
+  display_name?: string;
+  avatar_url?: string | null;
+  bio?: string;
+  last_seen_at?: string | null;
+};
+
+type Announcement = {
+  id: string;
+  message: string;
+  created_at: string;
+  created_by: string;
 };
 
 type SuggestionVote = -1 | 1;
@@ -92,13 +103,6 @@ type SuggestionVoteRow = {
   vote: SuggestionVote;
 };
 
-type Countdown = {
-  days: number;
-  hours: number;
-  minutes: number;
-  seconds: number;
-};
-
 function getSouthAfricaMonthKey(): string {
   const parts = new Intl.DateTimeFormat("en-GB", {
     timeZone: "Africa/Johannesburg",
@@ -108,43 +112,6 @@ function getSouthAfricaMonthKey(): string {
   const year = parts.find((part) => part.type === "year")?.value ?? "";
   const month = parts.find((part) => part.type === "month")?.value ?? "";
   return `${year}-${month}`;
-}
-
-function getNextSaturday(): number {
-  // South Africa uses UTC+2.
-  const now = new Date();
-  const southAfricanNow = new Date(now.getTime() + 2 * 60 * 60 * 1000);
-
-  const year = southAfricanNow.getUTCFullYear();
-  const month = southAfricanNow.getUTCMonth();
-  const date = southAfricanNow.getUTCDate();
-  const weekday = southAfricanNow.getUTCDay();
-
-  // Saturday = 6. If today is Saturday, target next Saturday.
-  const daysUntilSaturday = weekday === 6 ? 7 : (6 - weekday + 7) % 7;
-
-  // Saturday midnight in South Africa, converted to UTC.
-  return Date.UTC(
-    year,
-    month,
-    date + daysUntilSaturday,
-    -2,
-    0,
-    0
-  );
-}
-
-function getCountdown(): Countdown {
-  const difference = Math.max(0, getNextSaturday() - Date.now());
-
-  const totalSeconds = Math.floor(difference / 1000);
-
-  return {
-    days: Math.floor(totalSeconds / 86400),
-    hours: Math.floor((totalSeconds % 86400) / 3600),
-    minutes: Math.floor((totalSeconds % 3600) / 60),
-    seconds: totalSeconds % 60,
-  };
 }
 
 export default function Home() {
@@ -207,6 +174,11 @@ export default function Home() {
   const [globalError, setGlobalError] = useState("");
   const globalScrollRef = useRef<HTMLDivElement>(null);
   const chatScrollRef = useRef<HTMLDivElement>(null);
+  const [announcements, setAnnouncements] = useState<Announcement[]>([]);
+  const [announcementDraft, setAnnouncementDraft] = useState("");
+  const [announcementError, setAnnouncementError] = useState("");
+  const [announcementSending, setAnnouncementSending] = useState(false);
+  const [selectedGlobalMember, setSelectedGlobalMember] = useState<GlobalMessage | null>(null);
 
   // Community suggestion feed
   const [suggestionText, setSuggestionText] = useState("");
@@ -225,13 +197,6 @@ export default function Home() {
   const [siteVisits, setSiteVisits] = useState(0);
   const [onlineNow, setOnlineNow] = useState(0);
 
-  // Weekly Saturday countdown
-  const [countdown, setCountdown] = useState<Countdown>({
-    days: 0,
-    hours: 0,
-    minutes: 0,
-    seconds: 0,
-  });
 
   // Restore an existing guest or registered session when Anime Zone is reopened.
   // Supabase persists the auth session in this browser until the user logs out.
@@ -265,24 +230,14 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => {
-    setCountdown(getCountdown());
-
-    const interval = window.setInterval(() => {
-      setCountdown(getCountdown());
-    }, 1000);
-
-    return () => window.clearInterval(interval);
-  }, []);
-
   function isAnimeZoneAdmin(value: string) {
     const normalized = value.trim().replace(/^@/, "").toLowerCase();
-    return normalized === "ootw_team" || normalized === "animeking" || normalized === "animeking2026";
+    return normalized === "ootw_team" || normalized === "animeking" || normalized === "animeking2026" || normalized === "animezone2026";
   }
 
   function AdminName({ value }: { value: string }) {
     if (!isAnimeZoneAdmin(value)) return <>{value}</>;
-    return <span className="inline-flex items-center gap-1"><span className="bg-gradient-to-r from-red-500 via-amber-400 via-green-500 via-cyan-500 via-blue-500 to-fuchsia-500 bg-clip-text font-black text-transparent">{value}</span><span aria-label="Anime Zone admin" title="Anime Zone admin" className="text-amber-400">★</span></span>;
+    return <span className="inline-flex items-center gap-1"><span className="bg-gradient-to-r from-red-500 via-amber-400 via-green-500 via-cyan-500 via-blue-500 to-fuchsia-500 bg-clip-text font-black text-transparent">{value}</span><span aria-label="Anime Zone admin" title="Anime Zone admin" className="text-red-500">👑</span></span>;
   }
 
   function validUsername(value: string) {
@@ -734,7 +689,20 @@ export default function Home() {
         .order("created_at", { ascending: true })
         .limit(150);
       if (queryError) throw queryError;
-      setGlobalMessages((data ?? []) as GlobalMessage[]);
+      const rows = (data ?? []) as GlobalMessage[];
+      const ids = [...new Set(rows.map((row) => row.user_id))];
+      const [{ data: profiles }, { data: names }] = ids.length ? await Promise.all([
+        supabase.from("anime_profiles").select("user_id, display_name, avatar_url, bio, last_seen_at").in("user_id", ids),
+        supabase.from("anime_usernames").select("user_id, username").in("user_id", ids),
+      ]) : [{ data: [] }, { data: [] }];
+      const enriched = rows.map((row) => {
+        const person = (profiles ?? []).find((item) => item.user_id === row.user_id);
+        const name = (names ?? []).find((item) => item.user_id === row.user_id);
+        return { ...row, display_name: person?.display_name || name?.username || row.username,
+          avatar_url: person?.avatar_url || null, bio: person?.bio || "",
+          last_seen_at: person?.last_seen_at || null };
+      });
+      setGlobalMessages(enriched);
     } catch (err) {
       console.error("Global chat load error:", err);
       setGlobalError(err instanceof Error ? err.message : "Could not load Global Chat.");
@@ -789,6 +757,43 @@ export default function Home() {
     const element = globalScrollRef.current;
     if (element) element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
   }, [globalMessages]);
+
+  async function loadAnnouncements() {
+    try {
+      const { data, error: queryError } = await supabase
+        .from("anime_announcements")
+        .select("id, message, created_at, created_by")
+        .order("created_at", { ascending: false })
+        .limit(5);
+      if (queryError) throw queryError;
+      setAnnouncements((data ?? []) as Announcement[]);
+    } catch (err) {
+      console.error("Announcement load error:", err);
+      setAnnouncements([]);
+    }
+  }
+
+  async function postAnnouncement() {
+    const message = announcementDraft.trim();
+    if (!message || !isAdmin || announcementSending) return;
+    setAnnouncementSending(true);
+    setAnnouncementError("");
+    try {
+      const { data: auth, error: authError } = await supabase.auth.getUser();
+      if (authError) throw authError;
+      if (!auth.user) throw new Error("Sign in again.");
+      const { error: insertError } = await supabase.from("anime_announcements").insert({
+        message, created_by: auth.user.id,
+      });
+      if (insertError) throw insertError;
+      setAnnouncementDraft("");
+      await loadAnnouncements();
+    } catch (err) {
+      setAnnouncementError(err instanceof Error ? err.message : "Could not publish announcement.");
+    } finally {
+      setAnnouncementSending(false);
+    }
+  }
 
   async function loadSuggestions() {
     setSuggestionsLoading(true);
@@ -1023,7 +1028,10 @@ export default function Home() {
   }, [screen]);
 
   useEffect(() => {
-    if (screen === "lobby" && tab === "lobby") void loadMonthlyVotes();
+    if (screen === "lobby" && tab === "lobby") {
+      void loadMonthlyVotes();
+      void loadAnnouncements();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [screen, tab]);
 
@@ -1482,7 +1490,7 @@ export default function Home() {
 
   if (restoringSession) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-[#f4f2ff] text-[#292448]">
+      <main className="flex min-h-screen items-center justify-center bg-[#11131d] text-[#f4f5fb]">
         <div className="text-center">
           <img src="/az-logo.png" alt="Anime Zone" className="mx-auto h-20 w-20 rounded-2xl object-cover" />
           <p className="mt-5 text-sm font-semibold text-[#686184]">Entering Anime Zone...</p>
@@ -1493,7 +1501,7 @@ export default function Home() {
 
   if (screen === "welcome") {
     return (
-      <main className="relative min-h-screen overflow-hidden bg-[#f4f2ff] text-[#292448] before:pointer-events-none before:fixed before:inset-0 before:bg-[radial-gradient(ellipse_at_15%_10%,rgba(124,58,237,0.22),transparent_38%),radial-gradient(ellipse_at_85%_30%,rgba(8,145,178,0.13),transparent_35%),radial-gradient(ellipse_at_50%_100%,rgba(190,24,93,0.12),transparent_42%)] before:content-['']">
+      <main className="relative min-h-screen overflow-hidden bg-[#11131d] text-[#f4f5fb] before:pointer-events-none before:fixed before:inset-0 before:bg-[radial-gradient(ellipse_at_15%_10%,rgba(124,58,237,0.22),transparent_38%),radial-gradient(ellipse_at_85%_30%,rgba(8,145,178,0.13),transparent_35%),radial-gradient(ellipse_at_50%_100%,rgba(190,24,93,0.12),transparent_42%)] before:content-['']">
         <div className="relative z-10 mx-auto flex min-h-screen max-w-6xl flex-col px-6">
           <header className="flex items-center justify-between py-7">
             <div className="flex items-center gap-3">
@@ -1735,72 +1743,46 @@ export default function Home() {
   }
 
   return (
-    <main className="relative min-h-screen overflow-hidden bg-[#f4f2ff] pb-24 text-[#292448] before:pointer-events-none before:fixed before:inset-0 before:bg-[radial-gradient(ellipse_at_10%_0%,rgba(124,58,237,0.18),transparent_35%),radial-gradient(ellipse_at_90%_35%,rgba(8,145,178,0.12),transparent_35%)] before:content-['']">
+    <main className="relative min-h-screen overflow-hidden bg-[#11131d] pb-24 text-[#f4f5fb] before:pointer-events-none before:fixed before:inset-0 before:bg-[radial-gradient(ellipse_at_10%_0%,rgba(75,55,130,0.22),transparent_35%),radial-gradient(ellipse_at_90%_35%,rgba(8,90,120,0.16),transparent_35%)] before:content-['']">
       <div className="relative z-10 mx-auto max-w-7xl px-6 sm:px-8">
-        <header className="flex items-center justify-between py-6">
-          <div className="flex items-center gap-3">
-            <img src="/az-logo.png" alt="Anime Zone" className="h-12 w-12 rounded-2xl object-cover shadow-md" />
-            <div><p className="text-lg font-black tracking-wide">ANIME ZONE</p><p className="text-xs text-[#85809d]">OUT OF THIS WORLD</p></div>
+        <header className="flex items-center justify-between gap-4 py-5">
+          <div className="flex min-w-0 items-center gap-3">
+            <button type="button" onClick={() => {
+              setDisplayName(profile?.display_name || username); setBio(profile?.bio || "");
+              setProfileError(""); setProfileMenuOpen(true); setEditingProfile(false);
+            }} aria-label="Open your profile" className="h-12 w-12 shrink-0 overflow-hidden rounded-full border-2 border-[#7771a8] bg-[#272a3a] shadow-lg">
+              {profile?.avatar_url ? <img src={profile.avatar_url} alt="Your profile" className="h-full w-full object-cover" /> : <img src="/az-logo.png" alt="AZ" className="h-full w-full object-cover" />}
+            </button>
+            <button type="button" onClick={() => {
+              setFriendSearchOpen(true); setFriendSearchTerm(""); setFriendSearchResults([]);
+              setFriendError(""); setFriendNotice("");
+            }} aria-label="Search friends" title="Search friends" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-[#41445b] bg-[#202333] text-xl text-white hover:bg-[#30354b]">⌕</button>
+            <div className="min-w-0">
+              <p className="truncate text-sm font-black text-white">{profile?.display_name || username}</p>
+              <p className="text-xs text-[#a5a8bd]">{formatLastSeen(profile?.last_seen_at ?? null)}</p>
+            </div>
           </div>
-
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={() => {
-                setFriendSearchOpen(true);
-                setFriendSearchTerm("");
-                setFriendSearchResults([]);
-                setFriendError("");
-                setFriendNotice("");
-              }}
-              aria-label="Find friends"
-              title="Add friends"
-              className="relative flex h-11 w-11 items-center justify-center rounded-full border border-[#c9c2f5] bg-[#e9e7ff] text-xl text-[#41366f] transition hover:border-fuchsia-400 hover:bg-[#e4e1ff]"
-            >
-              ♡+
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setDisplayName(profile?.display_name || username);
-                setBio(profile?.bio || "");
-                setProfileError("");
-                setProfileMenuOpen(true);
-                setEditingProfile(false);
-              }}
-              aria-label="Open your profile"
-              title="Your profile"
-              className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-full border-2 border-[#d9d4ff] bg-[#e9e7ff] text-2xl shadow-md ring-2 ring-fuchsia-400/60 transition hover:scale-105"
-            >
-              {profile?.avatar_url ? (
-                <img
-                  src={profile.avatar_url}
-                  alt="Your profile"
-                  className="h-full w-full object-cover"
-                />
-              ) : (
-                <img src="/az-logo.png" alt="AZ" className="h-full w-full object-cover" />
-              )}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => void logOut()}
-              disabled={loading}
-              className="rounded-xl border border-[#c9c2f5] bg-[#e9e7ff] px-4 py-2.5 text-sm font-bold text-[#41366f] transition hover:border-fuchsia-400/60 hover:bg-[#e4e1ff] disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {loading ? "Please wait..." : "Log out"}
-            </button>
-          </div>
-          <div className="flex items-center gap-2 text-[11px] font-bold sm:text-xs">
-            <span className="rounded-full border border-[#d9d4ff] bg-white px-3 py-2 text-[#514b70]">◦ {siteVisits.toLocaleString()} visits</span>
-            <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-2 text-emerald-700">● {onlineNow} online</span>
+          <div className="flex items-center gap-2">
+            <div className="text-right">
+              <p className="text-lg font-black tracking-[.12em] text-white">ANIME ZONE</p>
+              <p className="text-[10px] tracking-[.2em] text-[#9ba0b8]">OUT OF THIS WORLD</p>
+            </div>
+            <button type="button" onClick={() => void logOut()} disabled={loading} className="rounded-xl border border-[#41445b] bg-[#202333] px-3 py-2 text-xs font-bold text-[#d8daea] hover:bg-[#30354b] disabled:opacity-50">{loading ? "…" : "Log out"}</button>
           </div>
         </header>
 
         {tab === "lobby" ? (
           <div className="mx-auto grid max-w-7xl grid-cols-1 gap-6 pb-8 lg:grid-cols-[minmax(0,1fr)_320px]">
             <section className="min-w-0 space-y-6">
+              <section className="rounded-3xl border border-[#34384d] bg-[#1c2030] p-5 shadow-xl">
+                <div className="flex items-center justify-between gap-3">
+                  <h2 className="font-black text-white">📢 Admin announcements</h2>
+                  <span className="rounded-full bg-[#292e43] px-3 py-1 text-[10px] font-black text-[#aeb5d2]">OFFICIAL</span>
+                </div>
+                {announcements.length === 0 ? <p className="mt-4 rounded-2xl bg-[#24293a] p-4 text-sm text-[#b2b7ca]">No messages from admin yet.</p> :
+                  <div className="mt-4 space-y-3">{announcements.map((item) => <article key={item.id} className="rounded-2xl bg-[#24293a] p-4"><p className="whitespace-pre-wrap break-words text-sm leading-6 text-white">{item.message}</p><time className="mt-2 block text-[10px] text-[#929ab8]">{new Date(item.created_at).toLocaleString()}</time></article>)}</div>}
+                {isAdmin && <div className="mt-4 border-t border-[#363b50] pt-4"><p className="mb-2 text-xs font-bold text-[#c2c8e0]">ADMIN · POST AN ANNOUNCEMENT</p><textarea value={announcementDraft} onChange={(e) => setAnnouncementDraft(e.target.value)} maxLength={1000} rows={3} placeholder="Write an update for everyone…" className="w-full rounded-xl border border-[#414760] bg-[#151927] p-3 text-sm text-white outline-none placeholder:text-[#737b98] focus:border-[#8b7be0]" /><button type="button" onClick={() => void postAnnouncement()} disabled={!announcementDraft.trim() || announcementSending} className="mt-2 rounded-xl bg-[#7564d8] px-4 py-2.5 text-xs font-black text-white disabled:opacity-50">{announcementSending ? "Publishing…" : "Publish announcement"}</button>{announcementError && <p className="mt-2 text-xs text-rose-300">{announcementError}</p>}</div>}
+              </section>
               <div className="rounded-3xl border border-[#ece8f4] bg-white p-5 shadow-sm sm:p-7">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
@@ -1817,26 +1799,13 @@ export default function Home() {
                 </div>
               </div>
 
-              <section className="overflow-hidden rounded-3xl border border-[#ece8f4] bg-white shadow-sm">
-                <div className="flex items-center justify-between border-b border-[#f0edf5] px-5 py-4 sm:px-6">
-                  <div><p className="text-xs font-bold uppercase tracking-[.18em] text-[#8b5cf6]">Happening now</p><h2 className="mt-1 text-xl font-black text-[#282438]">Community conversation</h2></div>
-                  <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700">● LIVE</span>
-                </div>
-                <button type="button" onClick={() => setTab("global")} className="group block w-full px-5 py-6 text-left transition hover:bg-[#fbfaff] sm:px-6">
-                  <div className="flex items-start gap-3">
-                    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#f0eaff] text-xl">🌐</div>
-                    <div className="min-w-0 flex-1"><p className="font-bold text-[#302b3d]">Anime Zone Global Chat</p><p className="mt-1 text-sm leading-6 text-[#817b91]">Jump into the live conversation with anime fans around the world. Messages update in real time and chat history is saved.</p><span className="mt-3 inline-flex items-center gap-2 text-sm font-bold text-[#8055d6]">Open conversation <span className="transition group-hover:translate-x-1">→</span></span></div>
-                  </div>
-                </button>
-              </section>
-
               <section className="rounded-3xl border border-[#ece8f4] bg-white p-5 shadow-sm sm:p-6">
                 <div className="flex flex-wrap items-end justify-between gap-3">
                   <div><p className="text-xs font-bold uppercase tracking-[.18em] text-[#8b5cf6]">Community decides</p><h2 className="mt-1 text-2xl font-black text-[#282438]">🗳️ Monthly Anime</h2><p className="mt-1 text-sm text-[#817b91]">Vote for the anime that should represent Anime Zone this month.</p></div>
                   <span className="rounded-full bg-[#f3efff] px-3 py-1.5 text-xs font-bold text-[#7954c7]">{getSouthAfricaMonthKey()}</span>
                 </div>
                 <div className="mt-5 grid gap-2 sm:grid-cols-2">
-                  {monthlyVotes.map((item, index) => <button key={item.anime_name} type="button" disabled={monthlyVoteLoading || isGuestAccount} onClick={() => void castMonthlyAnimeVote(item.anime_name)} className={`rounded-2xl border p-4 text-left transition hover:border-[#bda6ed] disabled:cursor-not-allowed disabled:opacity-60 ${item.my_vote ? "border-[#9b7be1] bg-[#f5f0ff]" : "border-[#eeeaf4] bg-white hover:bg-[#fbf9ff]"}`}><div className="flex items-center justify-between gap-2"><span className="font-bold text-[#302b3d]">{index + 1}. {item.anime_name}</span><span className="rounded-full bg-[#f0eaff] px-2.5 py-1 text-xs font-bold text-[#7954c7]">{item.votes}</span></div><div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[#f0edf5]"><div className="h-full rounded-full bg-[#8b5cf6]" style={{width: `${Math.max(0, ...monthlyVotes.map(v => v.votes)) ? item.votes / Math.max(1, ...monthlyVotes.map(v => v.votes)) * 100 : 0}%`}} /></div><p className="mt-2 text-xs font-semibold text-[#8055d6]">{item.my_vote ? "✓ Your vote" : isGuestAccount ? "Sign in to vote" : "Vote for this anime"}</p></button>)}
+                  {monthlyVotes.map((item, index) => <button key={item.anime_name} type="button" disabled={monthlyVoteLoading} onClick={() => void castMonthlyAnimeVote(item.anime_name)} className={`rounded-2xl border p-4 text-left transition hover:border-[#bda6ed] disabled:cursor-not-allowed disabled:opacity-60 ${item.my_vote ? "border-[#9b7be1] bg-[#f5f0ff]" : "border-[#eeeaf4] bg-white hover:bg-[#fbf9ff]"}`}><div className="flex items-center justify-between gap-2"><span className="font-bold text-[#302b3d]">{index + 1}. {item.anime_name}</span><span className="rounded-full bg-[#f0eaff] px-2.5 py-1 text-xs font-bold text-[#7954c7]">{item.votes}</span></div><div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[#f0edf5]"><div className="h-full rounded-full bg-[#8b5cf6]" style={{width: `${Math.max(0, ...monthlyVotes.map(v => v.votes)) ? item.votes / Math.max(1, ...monthlyVotes.map(v => v.votes)) * 100 : 0}%`}} /></div><p className="mt-2 text-xs font-semibold text-[#8055d6]">{item.my_vote ? "✓ Your vote" : "Vote for this anime"}</p></button>)}
                 </div>
                 {monthlyVotes.length === 0 && !monthlyVoteLoading && <p className="mt-4 text-sm text-[#817b91]">Monthly voting options are loading or not available yet.</p>}
                 {monthlyVoteLoading && <p className="mt-3 text-xs text-[#817b91]">Updating votes…</p>}
@@ -1846,7 +1815,7 @@ export default function Home() {
 
               <section className="rounded-3xl border border-[#ece8f4] bg-white p-5 shadow-sm sm:p-6">
                 <div className="flex items-center justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-[.18em] text-[#8b5cf6]">Community ideas</p><h2 className="mt-1 text-xl font-black text-[#282438]">Help shape Anime Zone</h2></div><button type="button" onClick={() => void loadSuggestions()} disabled={suggestionsLoading} className="rounded-full px-3 py-2 text-xs font-bold text-[#8055d6] hover:bg-[#f5f0ff]">{suggestionsLoading ? "Loading…" : "Refresh"}</button></div>
-                {!isGuestAccount && <div className="mt-4 rounded-2xl bg-[#faf8fd] p-3"><textarea value={suggestionText} onChange={(event) => {setSuggestionText(event.target.value);setSuggestionError("");}} maxLength={300} rows={2} placeholder="Suggest a feature or improvement…" className="w-full resize-y bg-transparent px-2 py-1 text-sm text-[#302b3d] outline-none placeholder:text-[#aaa4b2]"/><div className="flex items-center justify-between"><span className="text-xs text-[#9993a5]">{suggestionText.length}/300</span><button type="button" onClick={() => void postSuggestion()} disabled={postingSuggestion || !suggestionText.trim()} className="rounded-full bg-[#8055d6] px-4 py-2 text-xs font-bold text-white disabled:opacity-50">{postingSuggestion ? "Sending…" : "Share idea"}</button></div></div>}
+                <div className="mt-4 rounded-2xl bg-[#faf8fd] p-3"><textarea value={suggestionText} onChange={(event) => {setSuggestionText(event.target.value);setSuggestionError("");}} maxLength={300} rows={2} placeholder="Suggest a feature or improvement…" className="w-full resize-y bg-transparent px-2 py-1 text-sm text-[#302b3d] outline-none placeholder:text-[#aaa4b2]"/><div className="flex items-center justify-between"><span className="text-xs text-[#9993a5]">{suggestionText.length}/300</span><button type="button" onClick={() => void postSuggestion()} disabled={postingSuggestion || !suggestionText.trim()} className="rounded-full bg-[#8055d6] px-4 py-2 text-xs font-bold text-white disabled:opacity-50">{postingSuggestion ? "Sending…" : "Share idea"}</button></div></div>
                 {suggestionError && <p role="alert" className="mt-3 text-sm text-red-600">{suggestionError}</p>}
                 <div className="mt-4 divide-y divide-[#f0edf5]">{suggestions.slice(0,5).map((item) => <article key={item.id} className="py-4 first:pt-1"><div className="flex items-center justify-between gap-3"><span className="text-sm font-bold text-[#302b3d]">@{item.username}</span><time className="text-xs text-[#9993a5]">{new Date(item.created_at).toLocaleDateString()}</time></div><p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-[#5f596c]">{item.content}</p><div className="mt-3 flex gap-3 text-xs"><button type="button" onClick={() => void voteOnSuggestion(item.id, 1)} className={`font-bold ${item.myVote === 1 ? "text-[#8055d6]" : "text-[#8e879b]"}`}>↑ {item.likes}</button><button type="button" onClick={() => void voteOnSuggestion(item.id, -1)} className={`font-bold ${item.myVote === -1 ? "text-rose-600" : "text-[#8e879b]"}`}>↓ {item.dislikes}</button>{isAdmin && <button type="button" onClick={() => void deleteSuggestion(item.id)} disabled={deletingSuggestionId === item.id} className="ml-auto font-bold text-rose-600">Delete</button>}</div></article>)}{suggestions.length === 0 && <p className="py-6 text-center text-sm text-[#9993a5]">No community ideas yet. Start one.</p>}</div>
               </section>
@@ -1854,21 +1823,20 @@ export default function Home() {
 
             <aside className="space-y-5 lg:sticky lg:top-5 lg:self-start">
               <section className="rounded-3xl border border-[#ece8f4] bg-white p-5 shadow-sm"><h2 className="font-black text-[#302b3d]">Your space</h2><div className="mt-4 space-y-1"><button type="button" onClick={() => setTab("global")} className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-semibold text-[#5f596c] hover:bg-[#f7f3ff]"><span className="text-lg">🌐</span> Global Chat <span className="ml-auto text-[#8055d6]">→</span></button><button type="button" onClick={() => setTab("chat")} className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-semibold text-[#5f596c] hover:bg-[#f7f3ff]"><span className="text-lg">👥</span> Friends & messages <span className="ml-auto text-[#8055d6]">→</span></button><button type="button" onClick={() => setFriendSearchOpen(true)} className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-semibold text-[#5f596c] hover:bg-[#f7f3ff]"><span className="text-lg">＋</span> Find people <span className="ml-auto text-[#8055d6]">→</span></button></div></section>
-              <section className="rounded-3xl border border-[#ece8f4] bg-white p-5 shadow-sm"><div className="flex items-center justify-between"><h2 className="font-black text-[#302b3d]">Announcements</h2><span className="rounded-full bg-[#f3efff] px-2.5 py-1 text-[10px] font-bold text-[#8055d6]">OOTW</span></div><p className="mt-3 text-sm leading-6 text-[#817b91]">Official Anime Zone updates and community news will appear here.</p><div className="mt-4 rounded-2xl bg-[#faf8fd] p-3"><p className="text-xs font-bold text-[#8055d6]">NEXT WEEKLY UPDATE</p><p className="mt-1 font-black text-[#302b3d]">Saturday Update</p><div className="mt-3 grid grid-cols-4 gap-1.5">{[{label:"D",value:countdown.days},{label:"H",value:countdown.hours},{label:"M",value:countdown.minutes},{label:"S",value:countdown.seconds}].map((item)=><div key={item.label} className="rounded-lg bg-white p-2 text-center"><p className="text-lg font-black tabular-nums text-[#8055d6]">{String(item.value).padStart(2,"0")}</p><p className="text-[9px] font-bold text-[#9993a5]">{item.label}</p></div>)}</div></div></section>
               <section className="rounded-3xl border border-[#ece8f4] bg-white p-5 shadow-sm"><h2 className="font-black text-[#302b3d]">Community status</h2><p className="mt-3 text-sm text-[#817b91]"><span className="mr-2 inline-block h-2 w-2 rounded-full bg-emerald-500" />{onlineNow} online now</p><p className="mt-2 text-sm text-[#817b91]">{friends.length} friends connected</p></section>
             </aside>
           </div>
         ) : tab === "chat" ? (
           <section className="space-y-5 pb-8">
-            <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-[#34384d] bg-[#1c2030] p-4">
               <div className="flex items-center gap-3">
-                <img src="/az-logo.png" alt="Anime Zone Chat" className="h-12 w-12 rounded-2xl object-cover shadow-md" />
-                <div>
-                  <h1 className="text-3xl font-black">Anime Chat</h1>
-                  <p className="mt-1 text-sm text-[#6e6889]">Your private space to talk anime.</p>
-                </div>
+                <img src="/az-logo.png" alt="Anime Zone" className="h-11 w-11 rounded-xl object-cover shadow-md" />
+                <div><h1 className="text-2xl font-black text-white">Anime Zone</h1><p className="text-xs text-[#a5abc2]">Friends & private messages</p></div>
               </div>
-              <button type="button" onClick={() => setFriendSearchOpen(true)} className="rounded-xl bg-[#8b5cf6] px-4 py-3 text-sm font-bold text-white shadow-md hover:bg-[#7c3aed]">＋ Find people</button>
+              <div className="flex items-center gap-2">
+                <button type="button" onClick={() => setChatSection("requests")} aria-label="Friend requests" title="Friend requests" className="relative flex h-11 w-11 items-center justify-center rounded-xl border border-[#414760] bg-[#252a3d] text-xl text-white">♧{incomingRequests.length > 0 && <span className="absolute -right-2 -top-2 rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-black text-white">{incomingRequests.length}+</span>}</button>
+                <button type="button" onClick={() => { setFriendSearchOpen(true); setFriendSearchTerm(""); setFriendSearchResults([]); setFriendError(""); }} aria-label="Search friends" title="Search friends" className="flex h-11 w-11 items-center justify-center rounded-xl border border-[#414760] bg-[#252a3d] text-xl text-white">⌕</button>
+              </div>
             </div>
 
             <div className="grid min-h-[680px] gap-5 lg:grid-cols-[minmax(280px,360px)_1fr]">
@@ -1942,58 +1910,67 @@ export default function Home() {
             {friendError && <p role="alert" className="rounded-xl bg-red-500/10 px-4 py-3 text-sm text-red-600">{friendError}</p>}
           </section>
         ) : tab === "global" ? (
-          <section className="fixed inset-x-0 bottom-[76px] top-[82px] z-10 flex min-h-0 flex-col bg-white md:static md:mx-auto md:mb-6 md:h-[calc(100dvh-190px)] md:max-w-6xl md:rounded-3xl md:border md:border-[#ece8f4] md:shadow-sm">
-            <header className="flex shrink-0 items-center gap-3 border-b border-[#f0edf5] bg-white px-4 py-3 sm:px-6 sm:py-4 md:rounded-t-3xl">
+          <section className="fixed inset-x-0 bottom-[76px] top-[76px] z-10 flex min-h-0 flex-col bg-[#10121b] md:static md:mx-auto md:mb-6 md:h-[calc(100dvh-180px)] md:max-w-6xl md:rounded-3xl md:border md:border-[#34384d] md:shadow-2xl">
+            <header className="flex shrink-0 items-center gap-3 border-b border-[#303449] bg-[#171a27] px-4 py-3 sm:px-6 sm:py-4 md:rounded-t-3xl">
               <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[#f1eaff] text-xl">🌐</div>
-              <div className="min-w-0"><h1 className="font-black text-[#282438]">Global Chat</h1><p className="text-xs text-[#8b8497]">Anime Zone community · Saved messages</p></div>
+              <div className="min-w-0"><h1 className="font-black text-white">Global Chat</h1><p className="text-xs text-[#a2a8c0]">Anime Zone community · Saved messages</p></div>
               <span className="ml-auto rounded-full bg-emerald-50 px-3 py-1 text-[11px] font-bold text-emerald-700">● LIVE</span>
               <button type="button" onClick={() => void loadGlobalMessages()} aria-label="Refresh chat" className="rounded-full px-3 py-2 text-sm font-bold text-[#8055d6] hover:bg-[#f7f3ff]">↻</button>
             </header>
-            <div ref={globalScrollRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain bg-[#fbfaff] px-3 py-5 sm:px-6 md:px-8">
+            <div ref={globalScrollRef} className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain bg-[#10121b] px-3 py-5 sm:px-6 md:px-8">
               <div className="mx-auto mb-5 max-w-md text-center"><p className="text-xs font-bold uppercase tracking-[.16em] text-[#9a8ab5]">Welcome to the conversation</p><p className="mt-1 text-xs text-[#aaa3b3]">Be respectful. Keep it anime-friendly.</p></div>
               {globalLoading && globalMessages.length === 0 ? <p className="py-12 text-center text-sm text-[#85809d]">Loading messages…</p> : globalMessages.length === 0 ? <div className="py-16 text-center"><p className="text-4xl">💬</p><p className="mt-3 font-bold text-[#302b3d]">It's quiet in here</p><p className="mt-1 text-sm text-[#9993a5]">Start the first conversation.</p></div> : globalMessages.map((message) => {
                 const mine = message.user_id === profile?.user_id;
-                return <div key={message.id} className={`flex w-full ${mine ? "justify-end" : "justify-start"}`}><div className={`w-fit max-w-[88%] sm:max-w-[72%] ${mine ? "items-end" : "items-start"}`}><p className={`mb-1 px-2 text-[11px] font-bold ${mine ? "text-right text-[#8b5cf6]" : "text-[#6d647b]"}`}>{mine ? "You" : message.username}</p><div className={`rounded-2xl px-4 py-3 shadow-sm ${mine ? "rounded-br-md bg-[#8055d6] text-white" : "rounded-bl-md border border-[#eeeaf4] bg-white text-[#302b3d]"}`}><p className="whitespace-pre-wrap break-words text-[14px] leading-6">{message.content}</p></div><p className={`mt-1 px-2 text-[10px] text-[#aaa3b3] ${mine ? "text-right" : ""}`}>{new Date(message.created_at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}</p></div></div>;
+                return <div key={message.id} className={`flex w-full items-end gap-2 ${mine ? "justify-end" : "justify-start"}`}><button type="button" onClick={() => setSelectedGlobalMember(message)} aria-label={`View ${message.username}'s profile`} className={`h-9 w-9 shrink-0 overflow-hidden rounded-full border border-[#414760] bg-[#252a3d] ${mine ? "order-2" : ""}`}>{message.avatar_url ? <img src={message.avatar_url} alt="" className="h-full w-full object-cover" /> : <span className="flex h-full w-full items-center justify-center text-sm text-white">{(message.display_name || message.username).charAt(0).toUpperCase()}</span>}</button><div className={`w-fit max-w-[88%] sm:max-w-[72%] ${mine ? "items-end" : "items-start"}`}><button type="button" onClick={() => setSelectedGlobalMember(message)} className={`mb-1 px-2 text-sm font-bold ${mine ? "block text-right text-[#b6a7ff]" : "text-[#aeb7d5]"}`}>{mine ? "You" : message.display_name || <AdminName value={message.username} />} <span className="text-xs font-medium text-[#737c9a]">@<AdminName value={message.username} /></span></button><div className={`rounded-2xl px-4 py-3 shadow-sm ${mine ? "rounded-br-md bg-[#6554b8] text-white" : "rounded-bl-md border border-[#34394f] bg-[#202437] text-white"}`}><p className="whitespace-pre-wrap break-words text-base leading-7">{message.content}</p></div><p className={`mt-1 px-2 text-[10px] text-[#7e87a4] ${mine ? "text-right" : ""}`}>{new Date(message.created_at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}</p></div></div>;
               })}
             </div>
             {globalError && <p role="alert" className="shrink-0 bg-red-50 px-4 py-2 text-xs text-red-600">{globalError}</p>}
-            <form onSubmit={sendGlobalMessage} className="flex shrink-0 items-end gap-2 border-t border-[#f0edf5] bg-white px-3 py-3 pb-[max(12px,env(safe-area-inset-bottom))] sm:px-5 md:rounded-b-3xl"><textarea value={globalDraft} onChange={(event) => setGlobalDraft(event.target.value)} maxLength={1000} rows={1} placeholder="Write a message to everyone…" className="max-h-28 min-h-12 min-w-0 flex-1 resize-y rounded-2xl border border-[#e9e3f1] bg-[#faf8fd] px-4 py-3 text-sm text-[#302b3d] outline-none placeholder:text-[#aaa3b3] focus:border-[#b49add]"/><button type="submit" disabled={!globalDraft.trim() || globalSending} className="flex h-12 shrink-0 items-center justify-center rounded-2xl bg-[#8055d6] px-5 text-sm font-bold text-white transition hover:bg-[#7045c5] disabled:opacity-50">{globalSending ? "…" : "Send"}</button></form>
+            <form onSubmit={sendGlobalMessage} className="flex shrink-0 items-end gap-2 border-t border-[#303449] bg-[#171a27] px-3 py-3 pb-[max(12px,env(safe-area-inset-bottom))] sm:px-5 md:rounded-b-3xl"><textarea value={globalDraft} onChange={(event) => setGlobalDraft(event.target.value)} maxLength={1000} rows={1} placeholder="Write a message to everyone…" className="max-h-28 min-h-12 min-w-0 flex-1 resize-y rounded-2xl border border-[#414760] bg-[#22263a] px-4 py-3 text-base text-white outline-none placeholder:text-[#8c94b0] focus:border-[#9d8cf0]"/><button type="submit" disabled={!globalDraft.trim() || globalSending} className="flex h-12 shrink-0 items-center justify-center rounded-2xl bg-[#8055d6] px-5 text-sm font-bold text-white transition hover:bg-[#7045c5] disabled:opacity-50">{globalSending ? "…" : "Send"}</button></form>
           </section>
         ) : null}
       </div>
 
       {tab === "leaderboard" && (
-        <section className="relative z-10 mx-auto max-w-4xl space-y-6 px-6 py-8">
-          <style jsx>{`@keyframes azSnow {0%{transform:translateY(-30px) translateX(0);opacity:0}15%{opacity:.85}100%{transform:translateY(190px) translateX(24px);opacity:0}} .snowfall{position:absolute;inset:0;color:#8bb9e8;font-size:22px;letter-spacing:10px;animation:azSnow 5s linear infinite;white-space:nowrap}`}</style>
-          <div className="overflow-hidden rounded-[2rem] border border-[#d9d4ff] bg-gradient-to-br from-white via-[#f1f0ff] to-[#eaf5ff] p-8 text-center shadow-xl shadow-violet-100">
-            <div className="relative mx-auto mb-5 h-40 overflow-hidden rounded-2xl bg-gradient-to-b from-[#dcecff] to-[#eee8ff]">
-              <div className="snowfall" aria-hidden="true">❄　✦　❄　✧　❄　✦　❄</div>
-              <div className="absolute inset-0 flex items-center justify-center text-6xl">🏆</div>
-            </div>
-            <p className="text-xs font-black uppercase tracking-[0.25em] text-[#7561c8]">Coming soon</p>
-            <h1 className="mt-2 text-4xl font-black text-[#393158]">Leaderboard</h1>
-            <p className="mx-auto mt-3 max-w-xl text-sm leading-6 text-[#686184]">We’re building a community leaderboard with member rankings, activity and achievements. Stay tuned!</p>
-            <div className="mt-6 rounded-2xl border border-[#d9d4ff] bg-white/80 p-4 text-sm font-bold text-[#6555a5]">🚧 UNDER CONSTRUCTION 🚧</div>
-            <div className="mx-auto mt-5 w-full max-w-[260px] overflow-hidden rounded-2xl border border-[#d9d4ff] bg-white/80 p-2 shadow-lg shadow-violet-100">
-              <iframe
-                src="https://tenor.com/embed/9298246358806996976?autoplay=1&loop=1&mute=1"
-                title="Anime Zone under construction animation"
-                loading="eager"
-                allow="autoplay; encrypted-media"
-                allowFullScreen
-                className="block h-[260px] w-full rounded-xl"
-              />
-            </div>
-            <div className="mt-7 flex flex-wrap justify-center gap-3 text-sm font-bold">
-              <a className="rounded-xl bg-[#e9e7ff] px-4 py-3 text-[#51458e] hover:bg-[#dedaff]" href="https://www.youtube.com/@greenbutton" target="_blank" rel="noreferrer">▶ YouTube · @greenbutton</a>
-              <a className="rounded-xl bg-[#e9e7ff] px-4 py-3 text-[#51458e] hover:bg-[#dedaff]" href="https://www.instagram.com/ootwtechh/" target="_blank" rel="noreferrer">◎ Instagram · @ootwtechh</a>
-              <a className="rounded-xl bg-[#e9e7ff] px-4 py-3 text-[#51458e] hover:bg-[#dedaff]" href="https://www.tiktok.com/@ootwtech" target="_blank" rel="noreferrer">♪ TikTok · @ootwtech</a>
-              <a className="rounded-xl bg-[#dfeeff] px-4 py-3 text-[#315c91] hover:bg-[#d1e6ff]" href="https://discord.gg/b5f67cE7v" target="_blank" rel="noreferrer">💬 Join our Discord</a>
-              <a className="rounded-xl bg-[#e9e7ff] px-4 py-3 text-[#51458e] hover:bg-[#dedaff]" href="mailto:agentcube1101@gmail.com">✉️ Contact us · agentcube1101@gmail.com</a>
-            </div>
-            <p className="mt-4 text-xs text-[#85809d]">YouTube handle can be changed when the channel is renamed to Anime Zone.</p>
+        <section className="relative z-10 mx-auto max-w-5xl space-y-5 px-5 py-8 sm:px-8">
+          <div className="space-y-3">
+            {[
+              { label: "EXP", detail: "Experience rankings", icon: "✦" },
+              { label: "TIME", detail: "Time spent in Anime Zone", icon: "◷" },
+              { label: "GIFTS", detail: "Community gifts and rewards", icon: "🎁" },
+            ].map((item) => <div key={item.label} className="flex min-h-20 items-center gap-4 rounded-2xl border border-[#34394f] bg-[#1c2030] px-5 py-4 shadow-lg"><span className="flex h-11 w-11 items-center justify-center rounded-xl bg-[#292e43] text-xl text-[#9ba8ff]">{item.icon}</span><div><p className="text-sm font-black tracking-[.2em] text-white">{item.label}</p><p className="mt-1 text-xs text-[#929ab8]">{item.detail}</p></div><span className="ml-auto text-xs font-bold text-[#737c9a]">SOON</span></div>)}
+          </div>
+          <div className="relative overflow-hidden rounded-3xl border border-[#285d88] bg-[#101b2b] px-5 py-16 text-center shadow-[0_0_35px_rgba(28,142,255,0.16)]">
+            <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(31,125,210,0.2),transparent_65%)]" />
+            <p className="relative text-xs font-black tracking-[.35em] text-[#7fcaff]">ANIME ZONE</p>
+            <h1 className="relative mt-4 text-3xl font-black tracking-[.12em] text-[#d8f1ff] [text-shadow:0_0_12px_rgba(56,189,248,.9),0_0_30px_rgba(37,99,235,.65)] sm:text-5xl">UNDER CONSTRUCTION</h1>
+            <p className="relative mx-auto mt-4 max-w-lg text-sm leading-6 text-[#9cb8d2]">The leaderboard is being built. EXP, time and gifts will appear here soon.</p>
+          </div>
+          <div className="flex flex-wrap justify-center gap-3 pt-2 text-sm font-bold">
+            <a className="rounded-xl border border-[#34394f] bg-[#1c2030] px-4 py-3 text-[#d8dcf0] hover:bg-[#292e43]" href="https://www.youtube.com/@greenbutton" target="_blank" rel="noreferrer">▶ YouTube</a>
+            <a className="rounded-xl border border-[#34394f] bg-[#1c2030] px-4 py-3 text-[#d8dcf0] hover:bg-[#292e43]" href="https://www.instagram.com/ootwtechh/" target="_blank" rel="noreferrer">◎ Instagram</a>
+            <a className="rounded-xl border border-[#34394f] bg-[#1c2030] px-4 py-3 text-[#d8dcf0] hover:bg-[#292e43]" href="https://www.tiktok.com/@ootwtech" target="_blank" rel="noreferrer">♪ TikTok</a>
+            <a className="rounded-xl border border-[#34394f] bg-[#1c2030] px-4 py-3 text-[#d8dcf0] hover:bg-[#292e43]" href="https://discord.gg/b5f67cE7v" target="_blank" rel="noreferrer">💬 Discord</a>
+            <a className="rounded-xl border border-[#34394f] bg-[#1c2030] px-4 py-3 text-[#d8dcf0] hover:bg-[#292e43]" href="mailto:agentcube1101@gmail.com">✉️ Email</a>
           </div>
         </section>
+      )}
+
+      {selectedGlobalMember && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/75 px-4 py-6 backdrop-blur-sm" onClick={() => setSelectedGlobalMember(null)}>
+          <section role="dialog" aria-modal="true" className="w-full max-w-sm overflow-hidden rounded-3xl border border-[#414760] bg-[#1b1f2e] text-white shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <div className="relative h-28 bg-gradient-to-r from-[#33345d] to-[#17445a]" style={{ backgroundImage: profile?.user_id === selectedGlobalMember.user_id && profile.banner_url ? `url(${profile.banner_url})` : undefined, backgroundSize: "cover", backgroundPosition: "center" }}>
+              <button type="button" onClick={() => setSelectedGlobalMember(null)} className="absolute right-3 top-3 rounded-full bg-black/40 px-3 py-1 text-white">✕</button>
+            </div>
+            <div className="px-6 pb-6">
+              <div className="-mt-10 flex h-20 w-20 items-center justify-center overflow-hidden rounded-full border-4 border-[#1b1f2e] bg-[#30364c] text-2xl font-black">{selectedGlobalMember.avatar_url ? <img src={selectedGlobalMember.avatar_url} alt="" className="h-full w-full object-cover" /> : (selectedGlobalMember.display_name || selectedGlobalMember.username).charAt(0).toUpperCase()}</div>
+              <h2 className="mt-3 text-xl font-black">{selectedGlobalMember.display_name || selectedGlobalMember.username}</h2>
+              <p className="text-sm text-[#aeb7d5]">@{selectedGlobalMember.username}</p>
+              <p className="mt-4 whitespace-pre-wrap text-sm leading-6 text-[#e0e3f0]">{selectedGlobalMember.bio || "No bio added yet."}</p>
+              <p className="mt-3 text-xs text-[#929bb8]">{formatLastSeen(selectedGlobalMember.last_seen_at || null)}</p>
+              {selectedGlobalMember.user_id !== profile?.user_id && <button type="button" onClick={() => { void sendFriendRequest(selectedGlobalMember.user_id); setSelectedGlobalMember(null); }} disabled={friendActionLoading === selectedGlobalMember.user_id} className="mt-5 w-full rounded-xl bg-[#7564d8] px-4 py-3 text-sm font-black text-white disabled:opacity-50">{friendActionLoading === selectedGlobalMember.user_id ? "Sending…" : "＋ Add friend"}</button>}
+            </div>
+          </section>
+        </div>
       )}
 
       {friendSearchOpen && (
@@ -2274,14 +2251,14 @@ export default function Home() {
         </div>
       )}
 
-      <nav className="fixed bottom-0 left-0 right-0 z-30 border-t border-[#ece8f4] bg-white/95 px-2 pb-[max(8px,env(safe-area-inset-bottom))] pt-2 backdrop-blur">
+      <nav className="fixed bottom-0 left-0 right-0 z-30 border-t border-[#303449] bg-[#171a27]/95 px-2 pb-[max(8px,env(safe-area-inset-bottom))] pt-2 text-white backdrop-blur">
         <div className="mx-auto flex max-w-3xl items-center justify-around">
           <button
             onClick={() => setTab("lobby")}
             className={`flex flex-col items-center gap-1 rounded-xl px-3 py-2 text-xs font-bold transition ${
               tab === "lobby"
-                ? "bg-[#e4f5ff] text-[#7561c8]"
-                : "text-[#91a9ba]"
+                ? "bg-[#30334d] text-white"
+                : "text-[#9ba2bc]"
             }`}
           >
             <span className="text-xl">🏠</span>
@@ -2291,8 +2268,8 @@ export default function Home() {
             onClick={() => setTab("chat")}
             className={`flex flex-col items-center gap-1 rounded-xl px-3 py-2 text-xs font-bold transition ${
               tab === "chat"
-                ? "bg-[#e4f5ff] text-[#7561c8]"
-                : "text-[#91a9ba]"
+                ? "bg-[#30334d] text-white"
+                : "text-[#9ba2bc]"
             }`}
           >
             <span className="relative text-xl">💬
@@ -2303,14 +2280,14 @@ export default function Home() {
           </button>
           <button
             onClick={() => setTab("global")}
-            className={`flex flex-col items-center gap-1 rounded-xl px-3 py-2 text-xs font-bold transition ${tab === "global" ? "bg-[#e9e7ff] text-[#7561c8]" : "text-[#85809d]"}`}
+            className={`flex flex-col items-center gap-1 rounded-xl px-3 py-2 text-xs font-bold transition ${tab === "global" ? "bg-[#30334d] text-white" : "text-[#9ba2bc]"}`}
           >
             <span className="text-xl">🌐</span>
             Global
           </button>
           <button
             onClick={() => setTab("leaderboard")}
-            className={`flex flex-col items-center gap-1 rounded-xl px-3 py-2 text-xs font-bold transition ${tab === "leaderboard" ? "bg-[#e9e7ff] text-[#7561c8]" : "text-[#85809d]"}`}
+            className={`flex flex-col items-center gap-1 rounded-xl px-3 py-2 text-xs font-bold transition ${tab === "leaderboard" ? "bg-[#30334d] text-white" : "text-[#9ba2bc]"}`}
           >
             <span className="text-xl">🏆</span>
             Leaderboard
