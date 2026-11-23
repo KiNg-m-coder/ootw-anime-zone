@@ -13,7 +13,7 @@ type Screen =
   | "signin"
   | "lobby";
 
-type Tab = "lobby" | "chat" | "global" | "leaderboard";
+type Tab = "lobby" | "chat" | "global" | "leaderboard" | "watch";
 type ImageType = "avatar" | "banner";
 
 type Profile = {
@@ -67,6 +67,23 @@ type GlobalMessage = {
   avatar_url?: string | null;
   bio?: string;
   last_seen_at?: string | null;
+  banner_url?: string | null;
+};
+
+type WatchMessage = {
+  id: string;
+  user_id: string;
+  content: string;
+  created_at: string;
+  username: string;
+  display_name: string;
+  avatar_url: string | null;
+};
+
+type WatchVideoSettings = {
+  id: boolean;
+  video_url: string | null;
+  updated_at: string;
 };
 
 type Announcement = {
@@ -82,6 +99,7 @@ type Suggestion = {
   id: string;
   user_id: string;
   username: string;
+  avatar_url?: string | null;
   content: string;
   created_at: string;
   likes: number;
@@ -180,6 +198,19 @@ export default function Home() {
   const [announcementSending, setAnnouncementSending] = useState(false);
   const [selectedGlobalMember, setSelectedGlobalMember] = useState<GlobalMessage | null>(null);
 
+  // Shared Watch room
+  const [watchVideoUrl, setWatchVideoUrl] = useState("");
+  const [watchVideoDraft, setWatchVideoDraft] = useState("");
+  const [watchVideoLoading, setWatchVideoLoading] = useState(false);
+  const [watchVideoSaving, setWatchVideoSaving] = useState(false);
+  const [watchVideoError, setWatchVideoError] = useState("");
+  const [watchMessages, setWatchMessages] = useState<WatchMessage[]>([]);
+  const [watchMessagesLoading, setWatchMessagesLoading] = useState(false);
+  const [watchDraft, setWatchDraft] = useState("");
+  const [watchSending, setWatchSending] = useState(false);
+  const [watchChatError, setWatchChatError] = useState("");
+  const watchScrollRef = useRef<HTMLDivElement>(null);
+
   // Community suggestion feed
   const [suggestionText, setSuggestionText] = useState("");
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
@@ -230,10 +261,17 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function isAnimeZoneAdmin(value: string) {
-    const normalized = value.trim().replace(/^@/, "").toLowerCase();
-    return normalized === "ootw_team" || normalized === "animeking" || normalized === "animeking2026" || normalized === "animezone2026";
-  }
+ function isAnimeZoneAdmin(value: string) {
+  const normalized = value.trim().replace(/^@/, "").toLowerCase();
+
+  return (
+    normalized === "ootw_team" ||
+    normalized === "animeking" ||
+    normalized === "animeking2026" ||
+    normalized === "animezone2026" ||
+    normalized === "rohit"
+  );
+}
 
   function AdminName({ value }: { value: string }) {
     if (!isAnimeZoneAdmin(value)) return <>{value}</>;
@@ -550,7 +588,7 @@ export default function Home() {
         .limit(500);
       if (messageError) throw messageError;
 
-      const readAt = new Map((readRows ?? []).map((row) => [row.friend_id, new Date(row.last_read_at).getTime()]));
+      const readAt = new Map<string, number>((readRows ?? []).map((row: { friend_id: string; last_read_at: string }) => [row.friend_id, new Date(row.last_read_at).getTime()]));
       const unread = (incoming ?? []).filter((message) => {
         const lastRead = readAt.get(message.sender_id);
         return lastRead === undefined || new Date(message.created_at).getTime() > lastRead;
@@ -692,14 +730,14 @@ export default function Home() {
       const rows = (data ?? []) as GlobalMessage[];
       const ids = [...new Set(rows.map((row) => row.user_id))];
       const [{ data: profiles }, { data: names }] = ids.length ? await Promise.all([
-        supabase.from("anime_profiles").select("user_id, display_name, avatar_url, bio, last_seen_at").in("user_id", ids),
+        supabase.from("anime_profiles").select("user_id, display_name, avatar_url, banner_url, bio, last_seen_at").in("user_id", ids),
         supabase.from("anime_usernames").select("user_id, username").in("user_id", ids),
       ]) : [{ data: [] }, { data: [] }];
       const enriched = rows.map((row) => {
         const person = (profiles ?? []).find((item) => item.user_id === row.user_id);
         const name = (names ?? []).find((item) => item.user_id === row.user_id);
         return { ...row, display_name: person?.display_name || name?.username || row.username,
-          avatar_url: person?.avatar_url || null, bio: person?.bio || "",
+          avatar_url: person?.avatar_url || null, banner_url: person?.banner_url || null, bio: person?.bio || "",
           last_seen_at: person?.last_seen_at || null };
       });
       setGlobalMessages(enriched);
@@ -758,6 +796,199 @@ export default function Home() {
     if (element) element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
   }, [globalMessages]);
 
+  function getWatchEmbed(urlValue: string): { type: "youtube" | "vimeo" | "instagram" | "tiktok" | "video" | "invalid"; src: string } {
+    const raw = urlValue.trim();
+    if (!raw) return { type: "invalid", src: "" };
+    let parsed: URL;
+    try {
+      parsed = new URL(raw);
+    } catch {
+      return { type: "invalid", src: "" };
+    }
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return { type: "invalid", src: "" };
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+    if (host === "youtu.be" || host === "youtube.com" || host.endsWith(".youtube.com")) {
+      const id = host === "youtu.be"
+        ? parsed.pathname.split("/").filter(Boolean)[0]
+        : parsed.searchParams.get("v") || parsed.pathname.match(/\/(?:embed|shorts|live)\/([^/?]+)/)?.[1];
+      if (!id) return { type: "invalid", src: "" };
+      return { type: "youtube", src: `https://www.youtube-nocookie.com/embed/${encodeURIComponent(id)}?rel=0&loop=1&playlist=${encodeURIComponent(id)}` };
+    }
+    if (host === "vimeo.com" || host.endsWith(".vimeo.com")) {
+      const id = parsed.pathname.match(/\/(\d+)/)?.[1];
+      return id ? { type: "vimeo", src: `https://player.vimeo.com/video/${id}?loop=1` } : { type: "invalid", src: "" };
+    }
+    if (host === "instagram.com" || host.endsWith(".instagram.com")) {
+      const match = parsed.pathname.match(/\/(?:p|reel|tv)\/([^/]+)/);
+      return match ? { type: "instagram", src: `https://www.instagram.com/${parsed.pathname.split("/").filter(Boolean)[0]}/${encodeURIComponent(match[1])}/embed` } : { type: "invalid", src: "" };
+    }
+    if (host === "tiktok.com" || host.endsWith(".tiktok.com")) {
+      const id = parsed.pathname.match(/\/video\/(\d+)/)?.[1];
+      return id ? { type: "tiktok", src: `https://www.tiktok.com/player/v1/${id}` } : { type: "invalid", src: "" };
+    }
+    if (/\.(mp4|webm|ogg)(?:$)/i.test(parsed.pathname)) return { type: "video", src: raw };
+    return { type: "invalid", src: "" };
+  }
+
+  async function loadWatchVideo() {
+    setWatchVideoLoading(true);
+    setWatchVideoError("");
+    try {
+      const { data, error: queryError } = await supabase
+        .from("anime_watch_settings")
+        .select("id, video_url, updated_at")
+        .eq("id", true)
+        .maybeSingle();
+      if (queryError) throw queryError;
+      const url = (data as WatchVideoSettings | null)?.video_url || "";
+      setWatchVideoUrl(url);
+      setWatchVideoDraft(url);
+    } catch (err) {
+      console.error("Watch video settings error:", err);
+      setWatchVideoError(err instanceof Error ? err.message : "Could not load the Watch video.");
+    } finally {
+      setWatchVideoLoading(false);
+    }
+  }
+
+  async function saveWatchVideo() {
+    if (!isAdmin || watchVideoSaving) return;
+    const cleanUrl = watchVideoDraft.trim();
+    if (cleanUrl && getWatchEmbed(cleanUrl).type === "invalid") {
+      setWatchVideoError("Enter a valid YouTube, Vimeo, Instagram, TikTok, or direct MP4/WebM/OGG video URL.");
+      return;
+    }
+    setWatchVideoSaving(true);
+    setWatchVideoError("");
+    try {
+      const { error: saveError } = await supabase
+        .from("anime_watch_settings")
+        .upsert({ id: true, video_url: cleanUrl || null, updated_at: new Date().toISOString() }, { onConflict: "id" });
+      if (saveError) throw saveError;
+      setWatchVideoUrl(cleanUrl);
+    } catch (err) {
+      console.error("Watch video save error:", err);
+      setWatchVideoError(err instanceof Error ? err.message : "Could not update the shared video.");
+    } finally {
+      setWatchVideoSaving(false);
+    }
+  }
+
+  async function loadWatchMessages() {
+    setWatchMessagesLoading(true);
+    setWatchChatError("");
+    try {
+      const { data, error: queryError } = await supabase
+        .from("anime_watch_messages")
+        .select("id, user_id, content, created_at")
+        .order("created_at", { ascending: false })
+        .limit(250);
+      if (queryError) throw queryError;
+      const rows = (data ?? []).slice().reverse();
+      const userIds = [...new Set(rows.map((row) => row.user_id))];
+      const [{ data: names, error: namesError }, { data: profiles, error: profilesError }] = userIds.length
+        ? await Promise.all([
+            supabase.from("anime_usernames").select("user_id, username").in("user_id", userIds),
+            supabase.from("anime_profiles").select("user_id, display_name, avatar_url").in("user_id", userIds),
+          ])
+        : [{ data: [], error: null }, { data: [], error: null }];
+      if (namesError) throw namesError;
+      if (profilesError) throw profilesError;
+      setWatchMessages(rows.map((row) => {
+        const name = names?.find((item) => item.user_id === row.user_id);
+        const person = profiles?.find((item) => item.user_id === row.user_id);
+        return {
+          ...row,
+          username: name?.username || "Anime Zone member",
+          display_name: person?.display_name || name?.username || "Anime Zone member",
+          avatar_url: person?.avatar_url || null,
+        };
+      }) as WatchMessage[]);
+    } catch (err) {
+      console.error("Watch chat load error:", err);
+      setWatchChatError(err instanceof Error ? err.message : "Could not load Watch chat messages.");
+    } finally {
+      setWatchMessagesLoading(false);
+    }
+  }
+
+  async function sendWatchMessage(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const content = watchDraft.trim();
+    if (!content || watchSending) return;
+    setWatchSending(true);
+    setWatchChatError("");
+    try {
+      const { data: auth, error: authError } = await supabase.auth.getUser();
+      if (authError) throw authError;
+      if (!auth.user) throw new Error("Please sign in to use Watch chat.");
+      const { error: insertError } = await supabase
+        .from("anime_watch_messages")
+        .insert({ user_id: auth.user.id, content });
+      if (insertError) throw insertError;
+      setWatchDraft("");
+      await loadWatchMessages();
+    } catch (err) {
+      console.error("Watch chat send error:", err);
+      setWatchChatError(err instanceof Error ? err.message : "Could not send your Watch message.");
+    } finally {
+      setWatchSending(false);
+    }
+  }
+
+  async function openMemberProfile(userId: string, fallbackUsername: string) {
+    try {
+      const [{ data: name }, { data: person }] = await Promise.all([
+        supabase.from("anime_usernames").select("username").eq("user_id", userId).maybeSingle(),
+        supabase.from("anime_profiles").select("display_name, bio, avatar_url, banner_url, last_seen_at").eq("user_id", userId).maybeSingle(),
+      ]);
+      const resolvedUsername = name?.username || fallbackUsername;
+      setSelectedGlobalMember({
+        id: `profile-${userId}`,
+        user_id: userId,
+        username: resolvedUsername,
+        content: "",
+        created_at: new Date().toISOString(),
+        display_name: person?.display_name || resolvedUsername,
+        avatar_url: person?.avatar_url || null,
+        banner_url: person?.banner_url || null,
+        bio: person?.bio || "",
+        last_seen_at: person?.last_seen_at || null,
+      });
+    } catch (err) {
+      console.error("Member profile loading error:", err);
+      setFriendError(err instanceof Error ? err.message : "Could not load this member's profile.");
+    }
+  }
+
+  useEffect(() => {
+    if (screen !== "lobby" || tab !== "watch") return;
+    void loadWatchVideo();
+    void loadWatchMessages();
+    const channel = supabase
+      .channel("anime-zone-watch-live")
+      .on("postgres_changes", { event: "*", schema: "public", table: "anime_watch_messages" }, () => {
+        void loadWatchMessages();
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "anime_watch_settings" }, () => {
+        void loadWatchVideo();
+      })
+      .subscribe();
+    const timer = window.setInterval(() => {
+      void loadWatchMessages();
+    }, 30000);
+    return () => {
+      window.clearInterval(timer);
+      void supabase.removeChannel(channel);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen, tab]);
+
+  useEffect(() => {
+    const element = watchScrollRef.current;
+    if (element) element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
+  }, [watchMessages]);
+
   async function loadAnnouncements() {
     try {
       const { data, error: queryError } = await supabase
@@ -815,12 +1046,20 @@ export default function Home() {
       }
 
       const postIds = posts.map((post) => post.id);
-      const { data: voteRows, error: votesError } = await supabase
-        .from("anime_suggestion_votes")
-        .select("suggestion_id, user_id, vote")
-        .in("suggestion_id", postIds);
+      const memberIds = [...new Set(posts.map((post) => post.user_id))];
+      const [{ data: voteRows, error: votesError }, { data: memberProfiles, error: memberProfilesError }] = await Promise.all([
+        supabase
+          .from("anime_suggestion_votes")
+          .select("suggestion_id, user_id, vote")
+          .in("suggestion_id", postIds),
+        supabase
+          .from("anime_profiles")
+          .select("user_id, avatar_url")
+          .in("user_id", memberIds),
+      ]);
 
       if (votesError) throw votesError;
+      if (memberProfilesError) throw memberProfilesError;
 
       const votes = (voteRows || []) as SuggestionVoteRow[];
       const { data: userData } = await supabase.auth.getUser();
@@ -831,6 +1070,7 @@ export default function Home() {
           const postVotes = votes.filter((vote) => vote.suggestion_id === post.id);
           return {
             ...post,
+            avatar_url: memberProfiles?.find((person) => person.user_id === post.user_id)?.avatar_url || null,
             likes: postVotes.filter((vote) => vote.vote === 1).length,
             dislikes: postVotes.filter((vote) => vote.vote === -1).length,
             myVote:
@@ -1817,7 +2057,7 @@ export default function Home() {
                 <div className="flex items-center justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-[.18em] text-[#8b5cf6]">Community ideas</p><h2 className="mt-1 text-xl font-black text-[#282438]">Help shape Anime Zone</h2></div><button type="button" onClick={() => void loadSuggestions()} disabled={suggestionsLoading} className="rounded-full px-3 py-2 text-xs font-bold text-[#8055d6] hover:bg-[#f5f0ff]">{suggestionsLoading ? "Loading…" : "Refresh"}</button></div>
                 <div className="mt-4 rounded-2xl bg-[#faf8fd] p-3"><textarea value={suggestionText} onChange={(event) => {setSuggestionText(event.target.value);setSuggestionError("");}} maxLength={300} rows={2} placeholder="Suggest a feature or improvement…" className="w-full resize-y bg-transparent px-2 py-1 text-sm text-[#302b3d] outline-none placeholder:text-[#aaa4b2]"/><div className="flex items-center justify-between"><span className="text-xs text-[#9993a5]">{suggestionText.length}/300</span><button type="button" onClick={() => void postSuggestion()} disabled={postingSuggestion || !suggestionText.trim()} className="rounded-full bg-[#8055d6] px-4 py-2 text-xs font-bold text-white disabled:opacity-50">{postingSuggestion ? "Sending…" : "Share idea"}</button></div></div>
                 {suggestionError && <p role="alert" className="mt-3 text-sm text-red-600">{suggestionError}</p>}
-                <div className="mt-4 divide-y divide-[#f0edf5]">{suggestions.slice(0,5).map((item) => <article key={item.id} className="py-4 first:pt-1"><div className="flex items-center justify-between gap-3"><span className="text-sm font-bold text-[#302b3d]">@{item.username}</span><time className="text-xs text-[#9993a5]">{new Date(item.created_at).toLocaleDateString()}</time></div><p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-[#5f596c]">{item.content}</p><div className="mt-3 flex gap-3 text-xs"><button type="button" onClick={() => void voteOnSuggestion(item.id, 1)} className={`font-bold ${item.myVote === 1 ? "text-[#8055d6]" : "text-[#8e879b]"}`}>↑ {item.likes}</button><button type="button" onClick={() => void voteOnSuggestion(item.id, -1)} className={`font-bold ${item.myVote === -1 ? "text-rose-600" : "text-[#8e879b]"}`}>↓ {item.dislikes}</button>{isAdmin && <button type="button" onClick={() => void deleteSuggestion(item.id)} disabled={deletingSuggestionId === item.id} className="ml-auto font-bold text-rose-600">Delete</button>}</div></article>)}{suggestions.length === 0 && <p className="py-6 text-center text-sm text-[#9993a5]">No community ideas yet. Start one.</p>}</div>
+                <div className="mt-4 divide-y divide-[#f0edf5]">{suggestions.slice(0,5).map((item) => <article key={item.id} className="py-4 first:pt-1"><div className="flex items-center justify-between gap-3"><div className="flex min-w-0 items-center gap-2"><button type="button" onClick={() => void openMemberProfile(item.user_id, item.username)} aria-label={`View @${item.username}'s profile`} className="h-9 w-9 shrink-0 overflow-hidden rounded-full bg-[#eeeaff] ring-1 ring-[#ddd4f5]">{item.avatar_url ? <img src={item.avatar_url} alt="" className="h-full w-full object-cover" /> : <span className="flex h-full w-full items-center justify-center text-sm font-black text-[#7561c8]">{item.username.charAt(0).toUpperCase()}</span>}</button><button type="button" onClick={() => void openMemberProfile(item.user_id, item.username)} className="truncate text-sm font-bold text-[#302b3d] hover:text-[#8055d6]">@{item.username}</button></div><time className="shrink-0 text-xs text-[#9993a5]">{new Date(item.created_at).toLocaleDateString()}</time></div><p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-[#5f596c]">{item.content}</p><div className="mt-3 flex gap-3 text-xs"><button type="button" onClick={() => void voteOnSuggestion(item.id, 1)} className={`font-bold ${item.myVote === 1 ? "text-[#8055d6]" : "text-[#8e879b]"}`}>👍 {item.likes}</button><button type="button" onClick={() => void voteOnSuggestion(item.id, -1)} className={`font-bold ${item.myVote === -1 ? "text-rose-600" : "text-[#8e879b]"}`}>👎 {item.dislikes}</button>{isAdmin && <button type="button" onClick={() => void deleteSuggestion(item.id)} disabled={deletingSuggestionId === item.id} className="ml-auto font-bold text-rose-600">Delete</button>}</div></article>)}{suggestions.length === 0 && <p className="py-6 text-center text-sm text-[#9993a5]">No community ideas yet. Start one.</p>}</div>
               </section>
             </section>
 
@@ -1901,7 +2141,7 @@ export default function Home() {
                   </div>
                   {chatError && <p role="alert" className="px-5 py-2 text-sm text-red-600">{chatError}</p>}
                   <form onSubmit={sendChatMessage} className="flex items-center gap-3 border-t border-[#ebe8ff] bg-white p-4 sm:p-5">
-                    <input value={chatDraft} onChange={(event) => setChatDraft(event.target.value)} maxLength={2000} placeholder="Message…" className="min-w-0 flex-1 rounded-full border border-[#ddd7ff] bg-[#f8f7ff] px-5 py-4 text-sm outline-none focus:border-[#9b83ef]" />
+                    <input value={chatDraft} onChange={(event) => setChatDraft(event.target.value)} maxLength={2000} placeholder="Message…" className="min-w-0 flex-1 rounded-full border border-[#ddd7ff] bg-[#f8f7ff] px-5 py-4 text-sm text-[#30284e] outline-none placeholder:text-[#85809d] focus:border-[#9b83ef]" />
                     <button type="submit" disabled={!chatDraft.trim() || chatSending} className="rounded-full bg-[#8b5cf6] px-6 py-4 text-sm font-black text-white transition hover:bg-[#7c3aed] disabled:opacity-50">{chatSending ? "Sending…" : "Send"}</button>
                   </form>
                 </> : <div className="flex flex-1 flex-col items-center justify-center px-6 py-12 text-center"><img src="/az-logo.png" alt="Anime Zone Chat" className="h-20 w-20 rounded-3xl object-cover shadow-md" /><h2 className="mt-5 text-2xl font-black">Your Anime Zone chats</h2><p className="mt-2 max-w-sm text-sm leading-7 text-[#85809d]">Choose a friend from the list to open your private conversation. Your messages will appear here.</p></div>}
@@ -1926,6 +2166,71 @@ export default function Home() {
             </div>
             {globalError && <p role="alert" className="shrink-0 bg-red-50 px-4 py-2 text-xs text-red-600">{globalError}</p>}
             <form onSubmit={sendGlobalMessage} className="flex shrink-0 items-end gap-2 border-t border-[#303449] bg-[#171a27] px-3 py-3 pb-[max(12px,env(safe-area-inset-bottom))] sm:px-5 md:rounded-b-3xl"><textarea value={globalDraft} onChange={(event) => setGlobalDraft(event.target.value)} maxLength={1000} rows={1} placeholder="Write a message to everyone…" className="max-h-28 min-h-12 min-w-0 flex-1 resize-y rounded-2xl border border-[#414760] bg-[#22263a] px-4 py-3 text-base text-white outline-none placeholder:text-[#8c94b0] focus:border-[#9d8cf0]"/><button type="submit" disabled={!globalDraft.trim() || globalSending} className="flex h-12 shrink-0 items-center justify-center rounded-2xl bg-[#8055d6] px-5 text-sm font-bold text-white transition hover:bg-[#7045c5] disabled:opacity-50">{globalSending ? "…" : "Send"}</button></form>
+          </section>
+        ) : tab === "watch" ? (
+          <section className="mx-auto max-w-5xl space-y-5 pb-8 pt-4">
+            <header className="rounded-3xl border border-[#34384d] bg-[#1c2030] p-5 sm:p-6">
+              <p className="text-xs font-black uppercase tracking-[.2em] text-[#9b8cff]">Anime Zone together</p>
+              <h1 className="mt-2 text-3xl font-black text-white">🎬 Watch Room</h1>
+              <p className="mt-2 text-sm text-[#a5abc2]">Watch the community video and chat with other Anime Zone members.</p>
+            </header>
+
+            <section className="overflow-hidden rounded-3xl border border-[#34384d] bg-[#171a27] shadow-xl">
+              <div className="flex items-center justify-between gap-3 border-b border-[#303449] px-4 py-3 sm:px-6">
+                <h2 className="font-black text-white">Now playing</h2>
+                <span className="rounded-full bg-emerald-500/15 px-3 py-1 text-[10px] font-black text-emerald-300">SHARED VIDEO</span>
+              </div>
+              <div className="aspect-video w-full bg-black">
+                {watchVideoLoading ? (
+                  <div className="flex h-full items-center justify-center text-sm text-[#a5abc2]">Loading video…</div>
+                ) : !watchVideoUrl ? (
+                  <div className="flex h-full flex-col items-center justify-center px-6 text-center text-[#a5abc2]">
+                    <span className="text-5xl">🍿</span>
+                    <p className="mt-4 font-bold text-white">Nothing is playing yet</p>
+                    <p className="mt-1 text-sm">An admin can add a video for everyone to watch.</p>
+                  </div>
+                ) : (() => {
+                  const embed = getWatchEmbed(watchVideoUrl);
+                  if (embed.type === "video") return <video key={embed.src} src={embed.src} controls playsInline loop className="h-full w-full" />;
+                  if (embed.type === "invalid") return <div className="flex h-full items-center justify-center px-6 text-center text-sm text-rose-300">This video URL is not supported. Ask an admin to update it.</div>;
+                  return <iframe key={embed.src} src={embed.src} title="Anime Zone shared video" className="h-full w-full border-0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowFullScreen />;
+                })()}
+              </div>
+              {watchVideoError && <p role="alert" className="px-5 py-3 text-sm text-rose-300">{watchVideoError}</p>}
+              {isAdmin && (
+                <div className="space-y-3 border-t border-[#303449] p-4 sm:p-5">
+                  <label htmlFor="watch-video-url" className="block text-xs font-black uppercase tracking-wide text-[#c4c9dc]">Admin · Change shared video</label>
+                  <div className="flex flex-col gap-2 sm:flex-row">
+                    <input id="watch-video-url" value={watchVideoDraft} onChange={(event) => setWatchVideoDraft(event.target.value)} placeholder="Paste a YouTube, Vimeo, Instagram, TikTok or MP4 URL" className="min-w-0 flex-1 rounded-xl border border-[#414760] bg-[#22263a] px-4 py-3 text-sm text-white outline-none placeholder:text-[#8c94b0] focus:border-[#9d8cf0]" />
+                    <button type="button" onClick={() => void saveWatchVideo()} disabled={watchVideoSaving} className="rounded-xl bg-[#8055d6] px-5 py-3 text-sm font-black text-white disabled:opacity-50">{watchVideoSaving ? "Saving…" : "Update video"}</button>
+                  </div>
+                  <p className="text-xs leading-5 text-[#929ab8]">YouTube and Vimeo looping depends on embed support. Instagram and TikTok control autoplay/looping themselves, so those behaviours cannot be guaranteed.</p>
+                </div>
+              )}
+            </section>
+
+            <section className="flex min-h-[480px] flex-col overflow-hidden rounded-3xl border border-[#34384d] bg-[#171a27]">
+              <header className="flex items-center justify-between border-b border-[#303449] px-4 py-4 sm:px-6">
+                <div><h2 className="font-black text-white">💬 Watch Chat</h2><p className="mt-1 text-xs text-[#929ab8]">Messages shared with all members</p></div>
+                <button type="button" onClick={() => void loadWatchMessages()} disabled={watchMessagesLoading} className="rounded-xl px-3 py-2 text-sm font-bold text-[#b9a8ff] hover:bg-[#292e43]">{watchMessagesLoading ? "…" : "↻"}</button>
+              </header>
+              <div ref={watchScrollRef} className="min-h-[280px] flex-1 space-y-4 overflow-y-auto bg-[#10121b] px-4 py-5 sm:px-6">
+                {watchMessagesLoading && watchMessages.length === 0 ? <p className="py-12 text-center text-sm text-[#929ab8]">Loading Watch chat…</p> : watchMessages.length === 0 ? <p className="py-12 text-center text-sm text-[#929ab8]">No messages yet. Start the conversation.</p> : watchMessages.map((message) => (
+                  <div key={message.id} className="flex items-start gap-3">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[#30364c] text-sm font-black text-white">{message.avatar_url ? <img src={message.avatar_url} alt="" className="h-full w-full object-cover" /> : message.display_name.charAt(0).toUpperCase()}</div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1"><span className="text-sm font-bold text-[#c7baff]"><AdminName value={message.username} /></span><time className="text-[10px] text-[#737c9a]">{new Date(message.created_at).toLocaleString()}</time></div>
+                      <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-white">{message.content}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {watchChatError && <p role="alert" className="border-t border-[#303449] bg-rose-500/10 px-4 py-2 text-xs text-rose-200">{watchChatError}</p>}
+              <form onSubmit={sendWatchMessage} className="flex items-end gap-2 border-t border-[#303449] bg-[#171a27] p-3 sm:p-4">
+                <textarea value={watchDraft} onChange={(event) => setWatchDraft(event.target.value)} maxLength={1000} rows={1} placeholder="Chat about the video…" className="max-h-28 min-h-12 min-w-0 flex-1 resize-y rounded-2xl border border-[#414760] bg-[#22263a] px-4 py-3 text-sm text-white outline-none placeholder:text-[#8c94b0] focus:border-[#9d8cf0]" />
+                <button type="submit" disabled={!watchDraft.trim() || watchSending} className="h-12 shrink-0 rounded-2xl bg-[#8055d6] px-5 text-sm font-bold text-white disabled:opacity-50">{watchSending ? "…" : "Send"}</button>
+              </form>
+            </section>
           </section>
         ) : null}
       </div>
@@ -1958,11 +2263,11 @@ export default function Home() {
       {selectedGlobalMember && (
         <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/75 px-4 py-6 backdrop-blur-sm" onClick={() => setSelectedGlobalMember(null)}>
           <section role="dialog" aria-modal="true" className="w-full max-w-sm overflow-hidden rounded-3xl border border-[#414760] bg-[#1b1f2e] text-white shadow-2xl" onClick={(event) => event.stopPropagation()}>
-            <div className="relative h-28 bg-gradient-to-r from-[#33345d] to-[#17445a]" style={{ backgroundImage: profile?.user_id === selectedGlobalMember.user_id && profile.banner_url ? `url(${profile.banner_url})` : undefined, backgroundSize: "cover", backgroundPosition: "center" }}>
+            <div className="relative h-28 bg-gradient-to-r from-[#33345d] to-[#17445a]" style={{ backgroundImage: selectedGlobalMember.banner_url ? `url(${selectedGlobalMember.banner_url})` : undefined, backgroundSize: "cover", backgroundPosition: "center" }}>
               <button type="button" onClick={() => setSelectedGlobalMember(null)} className="absolute right-3 top-3 rounded-full bg-black/40 px-3 py-1 text-white">✕</button>
             </div>
             <div className="px-6 pb-6">
-              <div className="-mt-10 flex h-20 w-20 items-center justify-center overflow-hidden rounded-full border-4 border-[#1b1f2e] bg-[#30364c] text-2xl font-black">{selectedGlobalMember.avatar_url ? <img src={selectedGlobalMember.avatar_url} alt="" className="h-full w-full object-cover" /> : (selectedGlobalMember.display_name || selectedGlobalMember.username).charAt(0).toUpperCase()}</div>
+              <div className="relative z-10 -mt-9 flex h-20 w-20 items-center justify-center overflow-hidden rounded-full border-4 border-[#1b1f2e] bg-[#30364c] text-2xl font-black">{selectedGlobalMember.avatar_url ? <img src={selectedGlobalMember.avatar_url} alt="" className="h-full w-full object-cover" /> : (selectedGlobalMember.display_name || selectedGlobalMember.username).charAt(0).toUpperCase()}</div>
               <h2 className="mt-3 text-xl font-black">{selectedGlobalMember.display_name || selectedGlobalMember.username}</h2>
               <p className="text-sm text-[#aeb7d5]">@{selectedGlobalMember.username}</p>
               <p className="mt-4 whitespace-pre-wrap text-sm leading-6 text-[#e0e3f0]">{selectedGlobalMember.bio || "No bio added yet."}</p>
@@ -1978,7 +2283,7 @@ export default function Home() {
           <section role="dialog" aria-modal="true" aria-labelledby="friend-search-title" className="max-h-[88vh] w-full max-w-xl overflow-y-auto rounded-[2rem] border border-[#c9c2f5] bg-[#ffffff] p-6 shadow-2xl shadow-purple-950/70" onClick={(event) => event.stopPropagation()}>
             <div className="flex items-center justify-between gap-3"><div><h2 id="friend-search-title" className="text-2xl font-black">Find Friends</h2><p className="mt-1 text-sm text-[#6e6889]">Search by Anime Zone username.</p></div><button type="button" onClick={() => setFriendSearchOpen(false)} className="rounded-xl bg-[#e4e1ff] px-3 py-2 font-bold text-[#41366f]" aria-label="Close">✕</button></div>
             <div className="mt-6">
-              <input value={friendSearchTerm} onChange={(event) => setFriendSearchTerm(event.target.value)} maxLength={20} placeholder="Search username..." autoComplete="off" className="w-full rounded-xl border border-[#c9c2f5] bg-[#f5f4ff] px-4 py-4 text-sm outline-none focus:border-[#c084fc]" />
+              <input value={friendSearchTerm} onChange={(event) => setFriendSearchTerm(event.target.value)} maxLength={20} placeholder="Search username..." autoComplete="off" className="w-full rounded-xl border border-[#c9c2f5] bg-[#f5f4ff] px-4 py-4 text-sm text-[#30284e] placeholder:text-[#85809d] outline-none focus:border-[#c084fc]" />
               <p className="mt-2 text-xs text-[#85809d]">{friendSearchTerm.trim().length < 2 ? "Type at least 2 characters to find people." : friendSearchLoading ? "Searching..." : `${friendSearchResults.length} ${friendSearchResults.length === 1 ? "user" : "users"} found`}</p>
             </div>
             {friendError && <p role="alert" className="mt-4 break-words rounded-xl bg-red-500/10 px-4 py-3 text-sm text-red-200">{friendError}</p>}
@@ -2054,8 +2359,8 @@ export default function Home() {
                     )}
                   </div>
 
-                  <div className="relative z-10 -mt-10 px-4">
-                    <div className="flex h-20 w-20 items-center justify-center overflow-hidden rounded-2xl border-4 border-[#d9d4ff] bg-[#e9e7ff] text-4xl shadow-md">
+                  <div className="relative z-10 -mt-10 px-4 pb-2">
+                    <div className="relative flex h-20 w-20 items-center justify-center overflow-hidden rounded-2xl border-4 border-white bg-[#e9e7ff] text-4xl shadow-md">
                       {avatarPreview || profile?.avatar_url ? (
                         <img
                           src={avatarPreview || profile?.avatar_url || ""}
@@ -2252,10 +2557,10 @@ export default function Home() {
       )}
 
       <nav className="fixed bottom-0 left-0 right-0 z-30 border-t border-[#303449] bg-[#171a27]/95 px-2 pb-[max(8px,env(safe-area-inset-bottom))] pt-2 text-white backdrop-blur">
-        <div className="mx-auto flex max-w-3xl items-center justify-around">
+        <div className="mx-auto flex max-w-4xl items-center justify-around gap-1">
           <button
             onClick={() => setTab("lobby")}
-            className={`flex flex-col items-center gap-1 rounded-xl px-3 py-2 text-xs font-bold transition ${
+            className={`flex flex-col items-center gap-1 rounded-xl px-2 py-2 text-[11px] font-bold transition ${
               tab === "lobby"
                 ? "bg-[#30334d] text-white"
                 : "text-[#9ba2bc]"
@@ -2266,7 +2571,7 @@ export default function Home() {
           </button>
           <button
             onClick={() => setTab("chat")}
-            className={`flex flex-col items-center gap-1 rounded-xl px-3 py-2 text-xs font-bold transition ${
+            className={`flex flex-col items-center gap-1 rounded-xl px-2 py-2 text-[11px] font-bold transition ${
               tab === "chat"
                 ? "bg-[#30334d] text-white"
                 : "text-[#9ba2bc]"
@@ -2280,17 +2585,24 @@ export default function Home() {
           </button>
           <button
             onClick={() => setTab("global")}
-            className={`flex flex-col items-center gap-1 rounded-xl px-3 py-2 text-xs font-bold transition ${tab === "global" ? "bg-[#30334d] text-white" : "text-[#9ba2bc]"}`}
+            className={`flex flex-col items-center gap-1 rounded-xl px-2 py-2 text-[11px] font-bold transition ${tab === "global" ? "bg-[#30334d] text-white" : "text-[#9ba2bc]"}`}
           >
             <span className="text-xl">🌐</span>
             Global
           </button>
           <button
             onClick={() => setTab("leaderboard")}
-            className={`flex flex-col items-center gap-1 rounded-xl px-3 py-2 text-xs font-bold transition ${tab === "leaderboard" ? "bg-[#30334d] text-white" : "text-[#9ba2bc]"}`}
+            className={`flex flex-col items-center gap-1 rounded-xl px-2 py-2 text-[11px] font-bold transition ${tab === "leaderboard" ? "bg-[#30334d] text-white" : "text-[#9ba2bc]"}`}
           >
             <span className="text-xl">🏆</span>
             Leaderboard
+          </button>
+          <button
+            onClick={() => setTab("watch")}
+            className={`flex flex-col items-center gap-1 rounded-xl px-2 py-2 text-[11px] font-bold transition ${tab === "watch" ? "bg-[#30334d] text-white" : "text-[#9ba2bc]"}`}
+          >
+            <span className="text-xl">🎬</span>
+            Watch
           </button>
         </div>
       </nav>
