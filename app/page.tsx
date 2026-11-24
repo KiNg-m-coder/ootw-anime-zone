@@ -68,6 +68,9 @@ type GlobalMessage = {
   bio?: string;
   last_seen_at?: string | null;
   banner_url?: string | null;
+  reply_to?: string | null;
+  reply_username?: string | null;
+  reply_preview?: string | null;
 };
 
 type WatchMessage = {
@@ -190,6 +193,12 @@ export default function Home() {
   const [globalLoading, setGlobalLoading] = useState(false);
   const [globalSending, setGlobalSending] = useState(false);
   const [globalError, setGlobalError] = useState("");
+  const [globalReplyTo, setGlobalReplyTo] = useState<GlobalMessage | null>(null);
+  const [mentionSuggestions, setMentionSuggestions] = useState<FriendSearchResult[]>([]);
+  const [mentionSearchLoading, setMentionSearchLoading] = useState(false);
+  const [globalMentionNotice, setGlobalMentionNotice] = useState("");
+  const [unreadMentionCount, setUnreadMentionCount] = useState(0);
+  const globalTouchStart = useRef<{ x: number; y: number } | null>(null);
   const globalScrollRef = useRef<HTMLDivElement>(null);
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
@@ -261,17 +270,10 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
- function isAnimeZoneAdmin(value: string) {
-  const normalized = value.trim().replace(/^@/, "").toLowerCase();
-
-  return (
-    normalized === "ootw_team" ||
-    normalized === "animeking" ||
-    normalized === "animeking2026" ||
-    normalized === "animezone2026" ||
-    normalized === "rohit"
-  );
-}
+  function isAnimeZoneAdmin(value: string) {
+    const normalized = value.trim().replace(/^@/, "").toLowerCase();
+    return normalized === "ootw_team" || normalized === "animeking" || normalized === "animeking2026" || normalized === "animezone2026";
+  }
 
   function AdminName({ value }: { value: string }) {
     if (!isAnimeZoneAdmin(value)) return <>{value}</>;
@@ -723,7 +725,7 @@ export default function Home() {
     try {
       const { data, error: queryError } = await supabase
         .from("anime_global_messages")
-        .select("id, user_id, username, content, created_at")
+        .select("id, user_id, username, content, created_at, reply_to")
         .order("created_at", { ascending: true })
         .limit(150);
       if (queryError) throw queryError;
@@ -736,9 +738,12 @@ export default function Home() {
       const enriched = rows.map((row) => {
         const person = (profiles ?? []).find((item) => item.user_id === row.user_id);
         const name = (names ?? []).find((item) => item.user_id === row.user_id);
+        const replied = row.reply_to ? rows.find((candidate) => candidate.id === row.reply_to) : null;
+        const repliedName = replied ? names?.find((item) => item.user_id === replied.user_id)?.username : null;
         return { ...row, display_name: person?.display_name || name?.username || row.username,
           avatar_url: person?.avatar_url || null, banner_url: person?.banner_url || null, bio: person?.bio || "",
-          last_seen_at: person?.last_seen_at || null };
+          last_seen_at: person?.last_seen_at || null, reply_username: repliedName || replied?.username || null,
+          reply_preview: replied?.content || null };
       });
       setGlobalMessages(enriched);
     } catch (err) {
@@ -747,6 +752,80 @@ export default function Home() {
     } finally {
       setGlobalLoading(false);
     }
+  }
+
+  // Suggest usernames while the member types an @mention in Global Chat.
+  useEffect(() => {
+    const match = globalDraft.match(/(?:^|\s)@([a-zA-Z0-9_]{1,20})$/);
+    if (!match) {
+      setMentionSuggestions([]);
+      setMentionSearchLoading(false);
+      return;
+    }
+    let active = true;
+    setMentionSearchLoading(true);
+    const timer = window.setTimeout(async () => {
+      try {
+        const { data, error: searchError } = await supabase.rpc("anime_search_users", { search_term: match[1] });
+        if (searchError) throw searchError;
+        if (active) setMentionSuggestions(((data || []) as FriendSearchResult[]).slice(0, 6));
+      } catch (err) {
+        console.error("Mention search error:", err);
+        if (active) setMentionSuggestions([]);
+      } finally {
+        if (active) setMentionSearchLoading(false);
+      }
+    }, 180);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [globalDraft, supabase]);
+
+  function chooseGlobalMention(person: FriendSearchResult) {
+    setGlobalDraft((current) => current.replace(/(?:^|\s)@[a-zA-Z0-9_]{1,20}$/, (match) => `${match.startsWith(" ") ? " " : ""}@${person.username} `));
+    setMentionSuggestions([]);
+  }
+
+  async function loadMentionNotifications() {
+    try {
+      const { data: auth } = await supabase.auth.getUser();
+      if (!auth.user) return;
+      const { data, error: notificationError } = await supabase
+        .from("anime_global_notifications")
+        .select("id, message_id, sender_username, created_at")
+        .eq("recipient_id", auth.user.id)
+        .is("read_at", null)
+        .order("created_at", { ascending: false })
+        .limit(10);
+      if (notificationError) throw notificationError;
+      setUnreadMentionCount(data?.length || 0);
+      if (data?.length) {
+        const newest = data[0];
+        setGlobalMentionNotice(`You were mentioned by @${newest.sender_username} in Global Chat.`);
+      }
+    } catch (err) {
+      console.error("Mention notification load error:", err);
+    }
+  }
+
+  async function markMentionNotificationsRead() {
+    try {
+      const { data: auth } = await supabase.auth.getUser();
+      if (!auth.user) return;
+      const { error: updateError } = await supabase
+        .from("anime_global_notifications")
+        .update({ read_at: new Date().toISOString() })
+        .eq("recipient_id", auth.user.id)
+        .is("read_at", null);
+      if (updateError) throw updateError;
+      setUnreadMentionCount(0);
+      setGlobalMentionNotice("");
+    } catch (err) {
+      console.error("Mark mention notifications read error:", err);
+    }
+  }
+
+  function beginGlobalReply(message: GlobalMessage) {
+    setGlobalReplyTo(message);
+    setGlobalMentionNotice("");
   }
 
   async function sendGlobalMessage(event: React.FormEvent<HTMLFormElement>) {
@@ -761,9 +840,11 @@ export default function Home() {
       if (!auth.user) throw new Error("Please sign in again.");
       const { error: insertError } = await supabase
         .from("anime_global_messages")
-        .insert({ user_id: auth.user.id, content });
+        .insert({ user_id: auth.user.id, content, reply_to: globalReplyTo?.id || null });
       if (insertError) throw insertError;
       setGlobalDraft("");
+      setGlobalReplyTo(null);
+      setMentionSuggestions([]);
       await loadGlobalMessages();
     } catch (err) {
       console.error("Global chat send error:", err);
@@ -773,17 +854,40 @@ export default function Home() {
     }
   }
 
+  // Keep mention alerts active even when the member is viewing another tab.
+  useEffect(() => {
+    if (screen !== "lobby") return;
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+    let cancelled = false;
+    async function watchMentionAlerts() {
+      const { data: auth } = await supabase.auth.getUser();
+      if (!auth.user || cancelled) return;
+      await loadMentionNotifications();
+      channel = supabase
+        .channel(`anime-zone-mentions-${auth.user.id}`)
+        .on("postgres_changes", { event: "INSERT", schema: "public", table: "anime_global_notifications", filter: `recipient_id=eq.${auth.user.id}` }, (payload) => {
+          const incoming = payload.new as { sender_username?: string };
+          setUnreadMentionCount((count) => count + 1);
+          setGlobalMentionNotice(`You were mentioned by @${incoming.sender_username || "a member"} in Global Chat.`);
+        })
+        .subscribe();
+    }
+    void watchMentionAlerts();
+    return () => { cancelled = true; if (channel) void supabase.removeChannel(channel); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen]);
+
   useEffect(() => {
     if (screen !== "lobby" || tab !== "global") return;
     void loadGlobalMessages();
+    void loadMentionNotifications();
     const channel = supabase
       .channel("anime-zone-global-chat-live")
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "anime_global_messages" }, (payload) => {
-        const incoming = payload.new as GlobalMessage;
-        setGlobalMessages((current) => current.some((item) => item.id === incoming.id) ? current : [...current, incoming].slice(-150));
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "anime_global_messages" }, () => {
+        void loadGlobalMessages();
       })
       .subscribe();
-    const timer = window.setInterval(() => void loadGlobalMessages(), 30000);
+    const timer = window.setInterval(() => { void loadGlobalMessages(); void loadMentionNotifications(); }, 30000);
     return () => {
       window.clearInterval(timer);
       void supabase.removeChannel(channel);
@@ -2154,18 +2258,34 @@ export default function Home() {
             <header className="flex shrink-0 items-center gap-3 border-b border-[#303449] bg-[#171a27] px-4 py-3 sm:px-6 sm:py-4 md:rounded-t-3xl">
               <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[#f1eaff] text-xl">🌐</div>
               <div className="min-w-0"><h1 className="font-black text-white">Global Chat</h1><p className="text-xs text-[#a2a8c0]">Anime Zone community · Saved messages</p></div>
-              <span className="ml-auto rounded-full bg-emerald-50 px-3 py-1 text-[11px] font-bold text-emerald-700">● LIVE</span>
+              <span className="ml-auto rounded-full bg-emerald-500/15 px-3 py-1 text-[11px] font-bold text-emerald-300">● LIVE</span>{unreadMentionCount > 0 && <button type="button" onClick={() => void markMentionNotificationsRead()} className="rounded-full bg-rose-500 px-2.5 py-1 text-[11px] font-black text-white">🔔 {unreadMentionCount}</button>}
               <button type="button" onClick={() => void loadGlobalMessages()} aria-label="Refresh chat" className="rounded-full px-3 py-2 text-sm font-bold text-[#8055d6] hover:bg-[#f7f3ff]">↻</button>
             </header>
             <div ref={globalScrollRef} className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain bg-[#10121b] px-3 py-5 sm:px-6 md:px-8">
               <div className="mx-auto mb-5 max-w-md text-center"><p className="text-xs font-bold uppercase tracking-[.16em] text-[#9a8ab5]">Welcome to the conversation</p><p className="mt-1 text-xs text-[#aaa3b3]">Be respectful. Keep it anime-friendly.</p></div>
-              {globalLoading && globalMessages.length === 0 ? <p className="py-12 text-center text-sm text-[#85809d]">Loading messages…</p> : globalMessages.length === 0 ? <div className="py-16 text-center"><p className="text-4xl">💬</p><p className="mt-3 font-bold text-[#302b3d]">It's quiet in here</p><p className="mt-1 text-sm text-[#9993a5]">Start the first conversation.</p></div> : globalMessages.map((message) => {
+              {globalMentionNotice && <button type="button" onClick={() => void markMentionNotificationsRead()} className="sticky top-0 z-10 mx-auto block rounded-full border border-violet-400/30 bg-violet-500/20 px-4 py-2 text-xs font-bold text-violet-100 shadow-lg">🔔 {globalMentionNotice} · Tap to dismiss</button>}
+              {globalLoading && globalMessages.length === 0 ? <p className="py-12 text-center text-sm text-[#85809d]">Loading messages…</p> : globalMessages.length === 0 ? <div className="py-16 text-center"><p className="text-4xl">💬</p><p className="mt-3 font-bold text-white">It's quiet in here</p><p className="mt-1 text-sm text-[#9993a5]">Start the first conversation.</p></div> : globalMessages.map((message) => {
                 const mine = message.user_id === profile?.user_id;
-                return <div key={message.id} className={`flex w-full items-end gap-2 ${mine ? "justify-end" : "justify-start"}`}><button type="button" onClick={() => setSelectedGlobalMember(message)} aria-label={`View ${message.username}'s profile`} className={`h-9 w-9 shrink-0 overflow-hidden rounded-full border border-[#414760] bg-[#252a3d] ${mine ? "order-2" : ""}`}>{message.avatar_url ? <img src={message.avatar_url} alt="" className="h-full w-full object-cover" /> : <span className="flex h-full w-full items-center justify-center text-sm text-white">{(message.display_name || message.username).charAt(0).toUpperCase()}</span>}</button><div className={`w-fit max-w-[88%] sm:max-w-[72%] ${mine ? "items-end" : "items-start"}`}><button type="button" onClick={() => setSelectedGlobalMember(message)} className={`mb-1 px-2 text-sm font-bold ${mine ? "block text-right text-[#b6a7ff]" : "text-[#aeb7d5]"}`}>{mine ? "You" : message.display_name || <AdminName value={message.username} />} <span className="text-xs font-medium text-[#737c9a]">@<AdminName value={message.username} /></span></button><div className={`rounded-2xl px-4 py-3 shadow-sm ${mine ? "rounded-br-md bg-[#6554b8] text-white" : "rounded-bl-md border border-[#34394f] bg-[#202437] text-white"}`}><p className="whitespace-pre-wrap break-words text-base leading-7">{message.content}</p></div><p className={`mt-1 px-2 text-[10px] text-[#7e87a4] ${mine ? "text-right" : ""}`}>{new Date(message.created_at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}</p></div></div>;
+                return <div key={message.id} onTouchStart={(event) => { const touch = event.touches[0]; globalTouchStart.current = { x: touch.clientX, y: touch.clientY }; }} onTouchEnd={(event) => { const start = globalTouchStart.current; if (!start) return; const touch = event.changedTouches[0]; const dx = touch.clientX - start.x; const dy = touch.clientY - start.y; if (Math.abs(dx) > 65 && Math.abs(dy) < 45) beginGlobalReply(message); globalTouchStart.current = null; }} className={`group flex w-full items-end gap-2 ${mine ? "justify-end" : "justify-start"}`}>
+                  <button type="button" onClick={() => setSelectedGlobalMember(message)} aria-label={`View ${message.username}'s profile`} className={`h-9 w-9 shrink-0 overflow-hidden rounded-full border border-[#414760] bg-[#252a3d] ${mine ? "order-2" : ""}`}>{message.avatar_url ? <img src={message.avatar_url} alt="" className="h-full w-full object-cover" /> : <span className="flex h-full w-full items-center justify-center text-sm text-white">{(message.display_name || message.username).charAt(0).toUpperCase()}</span>}</button>
+                  <div className={`w-fit max-w-[88%] sm:max-w-[72%] ${mine ? "items-end" : "items-start"}`}>
+                    <button type="button" onClick={() => setSelectedGlobalMember(message)} className={`mb-1 px-2 text-sm font-bold ${mine ? "block text-right text-[#b6a7ff]" : "text-[#aeb7d5]"}`}>{mine ? "You" : message.display_name || <AdminName value={message.username} />} <span className="text-xs font-medium text-[#737c9a]">@<AdminName value={message.username} /></span></button>
+                    <div className={`rounded-2xl px-4 py-3 shadow-sm ${mine ? "rounded-br-md bg-[#6554b8] text-white" : "rounded-bl-md border border-[#34394f] bg-[#202437] text-white"}`}>
+                      {message.reply_to && <div className="mb-2 rounded-lg border-l-2 border-violet-300/70 bg-black/15 px-3 py-2 text-xs text-white/75"><span className="font-bold">Replying to @{message.reply_username || "member"}</span><p className="mt-1 line-clamp-2">{message.reply_preview || "Original message unavailable"}</p></div>}
+                      <p className="whitespace-pre-wrap break-words text-base leading-7">{message.content.split(/(@[a-zA-Z0-9_]+)/g).map((part, index) => part.startsWith("@") ? <span key={index} className="font-black text-[#d7c8ff]">{part}</span> : part)}</p>
+                    </div>
+                    <div className={`mt-1 flex items-center gap-3 px-2 text-[10px] text-[#7e87a4] ${mine ? "justify-end" : ""}`}><span>{new Date(message.created_at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}</span><button type="button" onClick={() => beginGlobalReply(message)} className="font-bold text-[#b6a7ff] opacity-100 sm:opacity-0 sm:group-hover:opacity-100">↩ Reply</button></div>
+                  </div>
+                </div>;
               })}
             </div>
             {globalError && <p role="alert" className="shrink-0 bg-red-50 px-4 py-2 text-xs text-red-600">{globalError}</p>}
-            <form onSubmit={sendGlobalMessage} className="flex shrink-0 items-end gap-2 border-t border-[#303449] bg-[#171a27] px-3 py-3 pb-[max(12px,env(safe-area-inset-bottom))] sm:px-5 md:rounded-b-3xl"><textarea value={globalDraft} onChange={(event) => setGlobalDraft(event.target.value)} maxLength={1000} rows={1} placeholder="Write a message to everyone…" className="max-h-28 min-h-12 min-w-0 flex-1 resize-y rounded-2xl border border-[#414760] bg-[#22263a] px-4 py-3 text-base text-white outline-none placeholder:text-[#8c94b0] focus:border-[#9d8cf0]"/><button type="submit" disabled={!globalDraft.trim() || globalSending} className="flex h-12 shrink-0 items-center justify-center rounded-2xl bg-[#8055d6] px-5 text-sm font-bold text-white transition hover:bg-[#7045c5] disabled:opacity-50">{globalSending ? "…" : "Send"}</button></form>
+            <div className="relative shrink-0 border-t border-[#303449] bg-[#171a27] px-3 pt-3 pb-[max(12px,env(safe-area-inset-bottom))] sm:px-5 md:rounded-b-3xl">
+              {globalReplyTo && <div className="mb-2 flex items-center gap-3 rounded-xl border-l-2 border-violet-400 bg-[#22263a] px-3 py-2"><div className="min-w-0 flex-1"><p className="text-[11px] font-black text-violet-200">Replying to @{globalReplyTo.username}</p><p className="truncate text-xs text-[#aeb7d5]">{globalReplyTo.content}</p></div><button type="button" onClick={() => setGlobalReplyTo(null)} className="rounded-lg px-2 py-1 text-sm text-[#c9cde0]" aria-label="Cancel reply">✕</button></div>}
+              {mentionSuggestions.length > 0 && <div className="mb-2 max-h-48 overflow-y-auto rounded-xl border border-[#414760] bg-[#22263a] p-2 shadow-xl">{mentionSuggestions.map((person) => <button type="button" key={person.user_id} onClick={() => chooseGlobalMention(person)} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-white hover:bg-[#343953]"><span className="flex h-7 w-7 items-center justify-center rounded-full bg-[#51427f]">{person.username.charAt(0).toUpperCase()}</span><span className="font-bold">@{person.username}</span><span className="ml-auto text-xs text-[#9ba2bc]">{person.display_name}</span></button>)}</div>}
+              {mentionSearchLoading && <p className="mb-1 px-2 text-[10px] text-[#9ba2bc]">Finding members…</p>}
+              <form onSubmit={sendGlobalMessage} className="flex items-end gap-2"><textarea value={globalDraft} onChange={(event) => setGlobalDraft(event.target.value)} maxLength={1000} rows={1} placeholder="Message everyone… use @ to mention" className="max-h-28 min-h-12 min-w-0 flex-1 resize-y rounded-2xl border border-[#414760] bg-[#22263a] px-4 py-3 text-base text-white outline-none placeholder:text-[#8c94b0] focus:border-[#9d8cf0]"/><button type="submit" disabled={!globalDraft.trim() || globalSending} className="flex h-12 shrink-0 items-center justify-center rounded-2xl bg-[#8055d6] px-5 text-sm font-bold text-white transition hover:bg-[#7045c5] disabled:opacity-50">{globalSending ? "…" : "Send"}</button></form>
+            </div>
           </section>
         ) : tab === "watch" ? (
           <section className="mx-auto max-w-5xl space-y-5 pb-8 pt-4">
@@ -2587,7 +2707,7 @@ export default function Home() {
             onClick={() => setTab("global")}
             className={`flex flex-col items-center gap-1 rounded-xl px-2 py-2 text-[11px] font-bold transition ${tab === "global" ? "bg-[#30334d] text-white" : "text-[#9ba2bc]"}`}
           >
-            <span className="text-xl">🌐</span>
+            <span className="relative text-xl">🌐{unreadMentionCount > 0 && <span className="absolute -right-4 -top-3 min-w-5 rounded-full bg-rose-600 px-1.5 py-0.5 text-[10px] font-black leading-4 text-white">{unreadMentionCount}</span>}</span>
             Global
           </button>
           <button
