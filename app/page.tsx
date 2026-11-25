@@ -2,7 +2,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { ChangeEvent } from "react";
+import type { ChangeEvent, ReactNode } from "react";
+import { LiveKitRoom, VideoTrack, useLocalParticipant, useTracks } from "@livekit/components-react";
+import { Track } from "livekit-client";
 import { createClient } from "../src/lib/client";
 
 type Screen =
@@ -226,6 +228,101 @@ function StickerPicker({ onSelect, onClose }: { onSelect: (url: string) => void;
   );
 }
 
+function LiveKitScreenShareStage({ isAdmin, fallback }: { isAdmin: boolean; fallback: ReactNode }) {
+  const screenShares = useTracks([Track.Source.ScreenShare]);
+  const { localParticipant, isScreenShareEnabled } = useLocalParticipant();
+  const [shareError, setShareError] = useState("");
+  const [shareBusy, setShareBusy] = useState(false);
+
+  async function toggleScreenShare() {
+    if (!isAdmin || shareBusy) return;
+    setShareBusy(true);
+    setShareError("");
+    try {
+      await localParticipant.setScreenShareEnabled(!isScreenShareEnabled);
+    } catch (error) {
+      console.error("LiveKit screen share error:", error);
+      setShareError(error instanceof Error ? error.message : "Could not start screen sharing. Check your browser permissions.");
+    } finally {
+      setShareBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex h-full min-h-0 flex-col bg-black">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-[#303449] bg-[#171a27] px-3 py-2.5 sm:px-4">
+        <div className="flex items-center gap-2">
+          <span className={`h-2 w-2 rounded-full ${screenShares.length > 0 ? "animate-pulse bg-rose-500" : "bg-slate-500"}`} />
+          <span className="text-xs font-black text-white">{screenShares.length > 0 ? "LIVE SCREEN SHARE" : "LIVE BROADCAST"}</span>
+        </div>
+        {isAdmin && <button type="button" onClick={() => void toggleScreenShare()} disabled={shareBusy} className={`rounded-xl px-4 py-2 text-xs font-black text-white disabled:opacity-50 ${isScreenShareEnabled ? "bg-rose-600 hover:bg-rose-500" : "bg-emerald-600 hover:bg-emerald-500"}`}>
+          {shareBusy ? "Please wait…" : isScreenShareEnabled ? "■ Stop sharing" : "▣ Start screen share"}
+        </button>}
+      </div>
+      {shareError && <p role="alert" className="shrink-0 bg-rose-500/10 px-4 py-2 text-xs text-rose-200">{shareError}</p>}
+      <div className="relative min-h-0 flex-1 bg-black">
+        {screenShares.length > 0 ? (
+          <div className="absolute inset-0 flex items-center justify-center bg-black">
+            <VideoTrack trackRef={screenShares[0]} className="h-full w-full object-contain" />
+          </div>
+        ) : (
+          <div className="h-full min-h-48">{fallback}</div>
+        )}
+      </div>
+      <p className="shrink-0 border-t border-[#303449] bg-[#171a27] px-3 py-2 text-[10px] leading-4 text-[#929ab8]">
+        {screenShares.length > 0 ? "The admin's screen is being shared with everyone in this Watch room." : isAdmin ? "Start screen share to broadcast your screen to everyone watching." : "Waiting for an Anime Zone admin to start screen sharing. The shared video player is shown until then."}
+      </p>
+    </div>
+  );
+}
+
+function LiveKitBroadcastPanel({ isAdmin, fallback }: { isAdmin: boolean; fallback: ReactNode }) {
+  const [token, setToken] = useState("");
+  const [serverUrl, setServerUrl] = useState("");
+  const [connectionError, setConnectionError] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [retry, setRetry] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function connectToLiveKit() {
+      setLoading(true);
+      setConnectionError("");
+      setToken("");
+      try {
+        const response = await fetch("/api/livekit/token", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ role: isAdmin ? "publisher" : "viewer" }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "Could not connect to the live room.");
+        if (!result.token || !result.serverUrl) throw new Error("LiveKit returned an incomplete connection response.");
+        if (!cancelled) {
+          setToken(result.token);
+          setServerUrl(result.serverUrl);
+        }
+      } catch (error) {
+        console.error("LiveKit connection setup error:", error);
+        if (!cancelled) setConnectionError(error instanceof Error ? error.message : "Could not connect to LiveKit.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    void connectToLiveKit();
+    return () => { cancelled = true; };
+  }, [isAdmin, retry]);
+
+  if (loading) return <div className="flex h-full min-h-48 items-center justify-center bg-black px-6 text-center text-sm text-[#a5abc2]">Connecting to Anime Zone live room…</div>;
+  if (!token || !serverUrl) return <div className="flex h-full min-h-48 flex-col items-center justify-center gap-3 bg-black px-6 text-center"><p className="text-sm text-rose-200">{connectionError || "Live room connection is unavailable."}</p><div className="w-full max-w-xl">{fallback}</div><button type="button" onClick={() => setRetry((value) => value + 1)} className="rounded-xl bg-[#8055d6] px-4 py-2 text-xs font-black text-white">Retry live connection</button></div>;
+
+  return (
+    <LiveKitRoom serverUrl={serverUrl} token={token} connect={true} audio={false} video={false} className="flex h-full min-h-0 flex-col" onError={(error) => { console.error("LiveKit room error:", error); setConnectionError(error.message); }}>
+      <LiveKitScreenShareStage isAdmin={isAdmin} fallback={fallback} />
+    </LiveKitRoom>
+  );
+}
+
 export default function Home() {
   const [supabase] = useState(() => createClient());
 
@@ -372,7 +469,7 @@ export default function Home() {
 
   function isAnimeZoneAdmin(value: string) {
     const normalized = value.trim().replace(/^@/, "").toLowerCase();
-    return normalized === "ootw_team" || normalized === "animeking" || normalized === "animeking2026" || normalized === "animezone2026";
+    return normalized === "ootw_team" || normalized === "animeking" || normalized === "animeking2026" || normalized === "animezone2026" || normalized === "rohit" || normalized === "madara";
   }
 
   function AdminName({ value }: { value: string }) {
@@ -2349,7 +2446,7 @@ export default function Home() {
         .az-theme-root[data-az-theme="light"] .text-\[\#a5abc2\], .az-theme-root[data-az-theme="snow-blue"] .text-\[\#a5abc2\], .az-theme-root[data-az-theme="light"] .text-\[\#929ab8\], .az-theme-root[data-az-theme="snow-blue"] .text-\[\#929ab8\] { color:#536b82 !important; }
         @media (max-width: 640px) { .az-theme-root { padding-bottom: calc(5.5rem + env(safe-area-inset-bottom)); } }
       `}</style>
-      <div className="relative z-10 mx-auto max-w-7xl px-6 sm:px-8">
+      <div className={`relative z-10 mx-auto ${tab === "chat" || tab === "global" || tab === "watch" ? "w-full max-w-none px-0" : "max-w-7xl px-6 sm:px-8"}`}>
         {(tab === "lobby" || tab === "chat" || tab === "leaderboard") && <header className="flex items-center justify-between gap-4 py-5">
           <div className="flex min-w-0 items-center gap-3">
             <button type="button" onClick={() => {
@@ -2368,10 +2465,6 @@ export default function Home() {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <div className="text-right">
-              <p className="text-lg font-black tracking-[.12em] text-white">ANIME ZONE</p>
-              <p className="text-[10px] tracking-[.2em] text-[#9ba0b8]">OUT OF THIS WORLD</p>
-            </div>
             <div className="relative">
               <button type="button" onClick={() => setThemeMenuOpen((open) => !open)} aria-label="Choose theme" title="Choose theme" className="rounded-xl border border-[#41445b] bg-[#202333] px-3 py-2 text-sm font-bold text-white hover:bg-[#30354b]">🎨</button>
               {themeMenuOpen && <div className="absolute right-0 top-12 z-[80] w-64 rounded-2xl border border-[#414760] bg-[#1b1f2e] p-3 text-white shadow-2xl">
@@ -2443,8 +2536,8 @@ export default function Home() {
             </aside>
           </div>
         ) : tab === "chat" ? (
-          <section className="space-y-5 pb-8">
-            <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-[#34384d] bg-[#1c2030] p-4">
+          <section className="fixed inset-x-0 bottom-[76px] top-0 z-40 flex min-h-0 flex-col overflow-hidden bg-[#10121b] md:static md:mx-auto md:mb-6 md:h-[calc(100dvh-90px)] md:max-w-none md:rounded-3xl md:border md:border-[#34384d] md:shadow-2xl">
+            <div className="flex shrink-0 flex-wrap items-center justify-between gap-4 border-b border-[#303449] bg-[#171a27] p-4 md:rounded-t-3xl">
               <div className="flex items-center gap-3">
                 <img src="/az-logo.png" alt="Anime Zone" className="h-11 w-11 rounded-xl object-cover shadow-md" />
                 <div><h1 className="text-2xl font-black text-white">Anime Zone</h1><p className="text-xs text-[#a5abc2]">Friends & private messages</p></div>
@@ -2455,7 +2548,7 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="grid min-h-[min(680px,calc(100dvh-190px))] gap-5 lg:grid-cols-[minmax(280px,360px)_1fr]">
+            <div className="grid min-h-0 flex-1 gap-3 overflow-hidden p-2 sm:p-3 lg:grid-cols-[minmax(280px,360px)_1fr]">
               <aside className={`${selectedChatFriendId ? "hidden lg:block" : "block"} overflow-hidden rounded-[1.8rem] border border-[#34384d] bg-[#171a27] shadow-lg`}>
                 <div className="border-b border-[#ebe8ff] p-5">
                   <div className="flex items-center justify-between">
@@ -2561,69 +2654,32 @@ export default function Home() {
             </div>
           </section>
         ) : tab === "watch" ? (
-          <section className="mx-auto w-full max-w-7xl space-y-4 px-2 pb-8 pt-3 sm:px-4">
-            <header className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-[#34384d] bg-[#1c2030] p-4 sm:p-6">
-              <div><p className="text-xs font-black uppercase tracking-[.2em] text-[#9b8cff]">Anime Zone together</p>
-              <h1 className="mt-2 text-3xl font-black text-white">🎬 Watch Room</h1>
-              <p className="mt-2 text-sm text-[#a5abc2]">Watch the community video and chat with other Anime Zone members.</p></div><button type="button" onClick={() => setThemeMenuOpen((open) => !open)} className="rounded-xl border border-[#414760] bg-[#252a3d] px-3 py-2 text-sm text-white" aria-label="Choose theme">🎨 Theme</button>
+          <section className="fixed inset-x-0 bottom-[76px] top-0 z-40 flex min-h-0 flex-col bg-[#10121b] md:static md:mx-auto md:mb-6 md:h-[calc(100dvh-90px)] md:max-w-none md:rounded-3xl md:border md:border-[#34384d] md:shadow-2xl">
+            <header className="flex shrink-0 items-center gap-3 border-b border-[#303449] bg-[#171a27] px-4 py-3 sm:px-6 sm:py-4 md:rounded-t-3xl">
+              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[#29243d] text-xl">🎬</div>
+              <div className="min-w-0"><h1 className="font-black text-white">Watch</h1><p className="text-xs text-[#a2a8c0]">Watch together · Anime Zone</p></div>
+              <button type="button" onClick={() => setThemeMenuOpen((open) => !open)} className="ml-auto rounded-full border border-[#414760] bg-[#252a3d] px-3 py-2 text-sm text-white" aria-label="Choose theme">🎨</button>
+              <button type="button" onClick={() => { void loadWatchVideo(); void loadWatchMessages(); }} className="rounded-full px-3 py-2 text-sm font-bold text-[#b9a8ff] hover:bg-[#292e43]" aria-label="Refresh Watch">↻</button>
             </header>
-
-            <section className="overflow-hidden rounded-3xl border border-[#34384d] bg-[#171a27] shadow-xl">
-              <div className="flex items-center justify-between gap-3 border-b border-[#303449] px-4 py-3 sm:px-6">
-                <h2 className="font-black text-white">Now playing</h2>
-                <span className="rounded-full bg-emerald-500/15 px-3 py-1 text-[10px] font-black text-emerald-300">SHARED VIDEO</span>
-              </div>
-              <div className="aspect-video max-h-[72dvh] w-full bg-black">
-                {watchVideoLoading ? (
-                  <div className="flex h-full items-center justify-center text-sm text-[#a5abc2]">Loading video…</div>
-                ) : !watchVideoUrl ? (
-                  <div className="flex h-full flex-col items-center justify-center px-6 text-center text-[#a5abc2]">
-                    <span className="text-5xl">🍿</span>
-                    <p className="mt-4 font-bold text-white">Nothing is playing yet</p>
-                    <p className="mt-1 text-sm">An admin can add a video for everyone to watch.</p>
-                  </div>
-                ) : (() => {
-                  const embed = getWatchEmbed(watchVideoUrl);
-                  if (embed.type === "video") return <video key={embed.src} src={embed.src} controls playsInline loop className="h-full w-full" />;
-                  if (embed.type === "invalid") return <div className="flex h-full items-center justify-center px-6 text-center text-sm text-rose-300">This video URL is not supported. Ask an admin to update it.</div>;
-                  return <iframe key={embed.src} src={embed.src} title="Anime Zone shared video" className="h-full w-full border-0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowFullScreen />;
-                })()}
-              </div>
-              {watchVideoError && <p role="alert" className="px-5 py-3 text-sm text-rose-300">{watchVideoError}</p>}
-              {isAdmin && (
-                <div className="space-y-3 border-t border-[#303449] p-4 sm:p-5">
-                  <label htmlFor="watch-video-url" className="block text-xs font-black uppercase tracking-wide text-[#c4c9dc]">Admin · Change shared video</label>
-                  <div className="flex flex-col gap-2 sm:flex-row">
-                    <input id="watch-video-url" value={watchVideoDraft} onChange={(event) => setWatchVideoDraft(event.target.value)} placeholder="Paste a YouTube, Vimeo, Instagram, TikTok or MP4 URL" className="min-w-0 flex-1 rounded-xl border border-[#414760] bg-[#22263a] px-4 py-3 text-sm text-white outline-none placeholder:text-[#8c94b0] focus:border-[#9d8cf0]" />
-                    <button type="button" onClick={() => void saveWatchVideo()} disabled={watchVideoSaving} className="rounded-xl bg-[#8055d6] px-5 py-3 text-sm font-black text-white disabled:opacity-50">{watchVideoSaving ? "Saving…" : "Update video"}</button>
-                  </div>
-                  <p className="text-xs leading-5 text-[#929ab8]">YouTube and Vimeo looping depends on embed support. Instagram and TikTok control autoplay/looping themselves, so those behaviours cannot be guaranteed.</p>
+            <div className="grid min-h-0 flex-1 grid-cols-1 gap-0 overflow-hidden lg:grid-cols-2">
+              <section className="flex min-h-[42dvh] min-w-0 flex-col border-b border-[#303449] bg-black lg:min-h-0 lg:border-b-0 lg:border-r">
+                <div className="flex shrink-0 items-center justify-between gap-3 border-b border-[#303449] bg-[#171a27] px-4 py-2.5">
+                  <h2 className="text-sm font-black text-white">Now playing</h2>
+                  <span className="rounded-full bg-emerald-500/15 px-3 py-1 text-[10px] font-black text-emerald-300">SHARED PLAYER</span>
                 </div>
-              )}
-            </section>
-
-            <section className="flex min-h-[480px] flex-col overflow-hidden rounded-3xl border border-[#34384d] bg-[#171a27]">
-              <header className="flex items-center justify-between border-b border-[#303449] px-4 py-4 sm:px-6">
-                <div><h2 className="font-black text-white">💬 Watch Chat</h2><p className="mt-1 text-xs text-[#929ab8]">Messages shared with all members</p></div>
-                <button type="button" onClick={() => void loadWatchMessages()} disabled={watchMessagesLoading} className="rounded-xl px-3 py-2 text-sm font-bold text-[#b9a8ff] hover:bg-[#292e43]">{watchMessagesLoading ? "…" : "↻"}</button>
-              </header>
-              <div ref={watchScrollRef} className="min-h-[280px] flex-1 space-y-4 overflow-y-auto bg-[#10121b] px-4 py-5 sm:px-6">
-                {watchMessagesLoading && watchMessages.length === 0 ? <p className="py-12 text-center text-sm text-[#929ab8]">Loading Watch chat…</p> : watchMessages.length === 0 ? <p className="py-12 text-center text-sm text-[#929ab8]">No messages yet. Start the conversation.</p> : watchMessages.map((message) => (
-                  <div key={message.id} className="flex items-start gap-3">
-                    <div className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[#30364c] text-sm font-black text-white">{message.avatar_url ? <img src={message.avatar_url} alt="" className="h-full w-full object-cover" /> : message.display_name.charAt(0).toUpperCase()}</div>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1"><span className="text-sm font-bold text-[#c7baff]"><AdminName value={message.username} /></span><time className="text-[10px] text-[#737c9a]">{new Date(message.created_at).toLocaleString()}</time></div>
-                      {getStickerUrl(message.content) ? <img src={getStickerUrl(message.content) || ""} alt="Sticker" className="mt-1 max-h-48 max-w-full rounded-xl object-contain" /> : <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-white">{message.content}</p>}
-                    </div>
-                  </div>
-                ))}
-              </div>
-              {watchChatError && <p role="alert" className="border-t border-[#303449] bg-rose-500/10 px-4 py-2 text-xs text-rose-200">{watchChatError}</p>}
-              <form onSubmit={sendWatchMessage} className="flex items-end gap-2 border-t border-[#303449] bg-[#171a27] p-3 sm:p-4">
-                <button type="button" title="Open sticker picker" onClick={() => setStickerPickerTarget((target) => target === "watch" ? null : "watch")} className="h-12 shrink-0 rounded-2xl border border-[#414760] bg-[#22263a] px-3 text-xl text-white">☻</button><textarea value={watchDraft} onChange={(event) => setWatchDraft(event.target.value)} maxLength={1000} rows={1} placeholder="Chat about the video…" className="max-h-28 min-h-12 min-w-0 flex-1 resize-y rounded-2xl border border-[#414760] bg-[#22263a] px-4 py-3 text-sm text-white outline-none placeholder:text-[#8c94b0] focus:border-[#9d8cf0]" />
-                <button type="submit" disabled={!watchDraft.trim() || watchSending} className="h-12 shrink-0 rounded-2xl bg-[#8055d6] px-5 text-sm font-bold text-white disabled:opacity-50">{watchSending ? "…" : "Send"}</button>
-              </form>
-            </section>
+                <div className="relative min-h-0 flex-1 bg-black">
+                  <LiveKitBroadcastPanel isAdmin={isAdmin} fallback={watchVideoLoading ? <div className="flex h-full min-h-48 items-center justify-center text-sm text-[#a5abc2]">Loading shared video…</div> : !watchVideoUrl ? <div className="flex h-full min-h-48 flex-col items-center justify-center px-6 text-center text-[#a5abc2]"><span className="text-5xl">🍿</span><p className="mt-4 font-bold text-white">Nothing is playing yet</p><p className="mt-1 text-sm">An admin can add a shared video or start a live screen share.</p></div> : (() => { const embed = getWatchEmbed(watchVideoUrl); if (embed.type === "video") return <video key={embed.src} src={embed.src} controls playsInline className="h-full w-full object-contain" />; if (embed.type === "invalid") return <div className="flex h-full items-center justify-center px-6 text-center text-sm text-rose-300">This video URL is not supported. Ask an admin to update it.</div>; return <iframe key={embed.src} src={embed.src} title="Anime Zone shared video" className="h-full w-full border-0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowFullScreen />; })()} />
+                </div>
+                {watchVideoError && <p role="alert" className="shrink-0 bg-rose-500/10 px-4 py-2 text-xs text-rose-200">{watchVideoError}</p>}
+                {isAdmin && <div className="shrink-0 space-y-2 border-t border-[#303449] bg-[#171a27] p-3 sm:p-4"><label htmlFor="watch-video-url" className="block text-xs font-black uppercase tracking-wide text-[#c4c9dc]">Admin · Change shared video URL</label><div className="flex flex-col gap-2 sm:flex-row"><input id="watch-video-url" value={watchVideoDraft} onChange={(event) => setWatchVideoDraft(event.target.value)} placeholder="Paste YouTube, Vimeo, TikTok, Instagram or MP4 URL" className="min-w-0 flex-1 rounded-xl border border-[#414760] bg-[#22263a] px-4 py-3 text-sm text-white outline-none placeholder:text-[#8c94b0] focus:border-[#9d8cf0]"/><button type="button" onClick={() => void saveWatchVideo()} disabled={watchVideoSaving} className="rounded-xl bg-[#8055d6] px-5 py-3 text-sm font-black text-white disabled:opacity-50">{watchVideoSaving ? "Saving…" : "Update video"}</button></div><p className="text-[11px] leading-4 text-[#929ab8]">Changes sync to everyone through Supabase Realtime (with periodic refresh as backup).</p><p className="text-[11px] text-emerald-200">Use Start screen share above to broadcast your screen live. The shared URL remains available as a fallback.</p></div>}
+              </section>
+              <section className="flex min-h-0 min-w-0 flex-col bg-[#10121b]">
+                <header className="flex shrink-0 items-center justify-between border-b border-[#303449] bg-[#171a27] px-4 py-3"><div><h2 className="font-black text-white">💬 Watch Chat</h2><p className="mt-0.5 text-xs text-[#929ab8]">Live messages for everyone</p></div><button type="button" onClick={() => void loadWatchMessages()} disabled={watchMessagesLoading} className="rounded-xl px-3 py-2 text-sm font-bold text-[#b9a8ff] hover:bg-[#292e43]">{watchMessagesLoading ? "…" : "↻"}</button></header>
+                <div ref={watchScrollRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-4 py-5 sm:px-6">{watchMessagesLoading && watchMessages.length === 0 ? <p className="py-12 text-center text-sm text-[#929ab8]">Loading Watch chat…</p> : watchMessages.length === 0 ? <p className="py-12 text-center text-sm text-[#929ab8]">No messages yet. Start the conversation.</p> : watchMessages.map((message) => <div key={message.id} className="flex items-start gap-3"><div className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[#30364c] text-sm font-black text-white">{message.avatar_url ? <img src={message.avatar_url} alt="" className="h-full w-full object-cover"/> : message.display_name.charAt(0).toUpperCase()}</div><div className="min-w-0 flex-1"><div className="flex flex-wrap items-baseline gap-x-2 gap-y-1"><span className="text-sm font-bold text-[#c7baff]"><AdminName value={message.username}/></span><time className="text-[10px] text-[#737c9a]">{new Date(message.created_at).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"})}</time></div>{getStickerUrl(message.content) ? <img src={getStickerUrl(message.content) || ""} alt="Sticker" className="mt-1 max-h-48 max-w-full rounded-xl object-contain"/> : <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-white">{message.content}</p>}</div></div>)}</div>
+                {watchChatError && <p role="alert" className="shrink-0 border-t border-[#303449] bg-rose-500/10 px-4 py-2 text-xs text-rose-200">{watchChatError}</p>}
+                <form onSubmit={sendWatchMessage} className="flex shrink-0 items-end gap-2 border-t border-[#303449] bg-[#171a27] p-3 sm:p-4"><button type="button" title="Open sticker picker" onClick={() => setStickerPickerTarget((target) => target === "watch" ? null : "watch")} className="h-12 shrink-0 rounded-2xl border border-[#414760] bg-[#22263a] px-3 text-xl text-white">☻</button><textarea value={watchDraft} onChange={(event) => setWatchDraft(event.target.value)} maxLength={1000} rows={1} placeholder="Chat about what you're watching…" className="max-h-28 min-h-12 min-w-0 flex-1 resize-y rounded-2xl border border-[#414760] bg-[#22263a] px-4 py-3 text-sm text-white outline-none placeholder:text-[#8c94b0] focus:border-[#9d8cf0]"/><button type="submit" disabled={!watchDraft.trim() || watchSending} className="h-12 shrink-0 rounded-2xl bg-[#8055d6] px-5 text-sm font-bold text-white disabled:opacity-50">{watchSending ? "…" : "Send"}</button></form>
+              </section>
+            </div>
           </section>
         ) : null}
       </div>
