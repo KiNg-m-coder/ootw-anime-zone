@@ -15,6 +15,14 @@ type Screen =
 
 type Tab = "lobby" | "chat" | "global" | "leaderboard" | "watch";
 type ImageType = "avatar" | "banner";
+type AnimeTheme = "light" | "dark" | "neon-blue" | "neon-purple" | "snow-blue";
+const ANIME_THEMES: { id: AnimeTheme; label: string; emoji: string }[] = [
+  { id: "light", label: "Light", emoji: "☀️" },
+  { id: "dark", label: "Dark", emoji: "🌙" },
+  { id: "neon-blue", label: "Neon Blue", emoji: "💠" },
+  { id: "neon-purple", label: "Neon Purple", emoji: "💜" },
+  { id: "snow-blue", label: "Anime Zone Snow Blue", emoji: "❄️" },
+];
 
 type Profile = {
   user_id: string;
@@ -135,6 +143,89 @@ function getSouthAfricaMonthKey(): string {
   return `${year}-${month}`;
 }
 
+const ANIME_ZONE_STICKER_PREFIX = "AZSTICKER:";
+type StickerTarget = "dm" | "global" | "watch";
+type GiphySticker = {
+  id: string;
+  title?: string;
+  images?: {
+    fixed_width?: { url?: string };
+    fixed_width_small?: { url?: string };
+    original?: { url?: string };
+  };
+};
+
+function getStickerUrl(content: string): string | null {
+  if (!content.startsWith(ANIME_ZONE_STICKER_PREFIX)) return null;
+  const url = content.slice(ANIME_ZONE_STICKER_PREFIX.length).trim();
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:" || !/^media\d*\.giphy\.com$/i.test(parsed.hostname)) return null;
+    return url;
+  } catch {
+    return null;
+  }
+}
+
+function StickerPicker({ onSelect, onClose }: { onSelect: (url: string) => void; onClose: () => void }) {
+  const [query, setQuery] = useState("");
+  const [stickers, setStickers] = useState<GiphySticker[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const apiKey = process.env.NEXT_PUBLIC_GIPHY_API_KEY;
+
+  async function loadStickers(searchTerm = "") {
+    if (!apiKey) {
+      setError("GIPHY API key not found. Check NEXT_PUBLIC_GIPHY_API_KEY in .env.local and restart the app.");
+      return;
+    }
+    setLoading(true);
+    setError("");
+    try {
+      const endpoint = searchTerm.trim()
+        ? `https://api.giphy.com/v1/stickers/search?api_key=${encodeURIComponent(apiKey)}&q=${encodeURIComponent(searchTerm.trim())}&limit=30&rating=pg&lang=en`
+        : `https://api.giphy.com/v1/stickers/trending?api_key=${encodeURIComponent(apiKey)}&limit=30&rating=pg`;
+      const response = await fetch(endpoint);
+      if (!response.ok) throw new Error(response.status === 401 ? "GIPHY rejected the API key. Check that it was copied correctly." : `GIPHY returned an error (${response.status}).`);
+      const payload = await response.json();
+      setStickers(Array.isArray(payload.data) ? payload.data : []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't load stickers from GIPHY.");
+      setStickers([]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { void loadStickers(); }, []);
+
+  return (
+    <div className="fixed bottom-[88px] left-3 z-[120] flex max-h-[min(430px,65dvh)] w-[min(370px,calc(100vw-24px))] flex-col overflow-hidden rounded-2xl border border-[#454b66] bg-[#171a27] text-white shadow-2xl sm:bottom-24 sm:left-6">
+      <div className="flex items-center gap-2 border-b border-[#34384d] p-3">
+        <div className="min-w-0 flex-1"><p className="text-sm font-black">Anime Zone Stickers</p><p className="text-[10px] text-[#aeb7d5]">Powered by GIPHY</p></div>
+        <button type="button" onClick={onClose} aria-label="Close stickers" className="rounded-lg px-2 py-1 text-lg text-[#aeb7d5] hover:bg-[#30364c]">×</button>
+      </div>
+      <form onSubmit={(event) => { event.preventDefault(); void loadStickers(query); }} className="flex gap-2 border-b border-[#34384d] p-3">
+        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search anime stickers…" className="min-w-0 flex-1 rounded-xl border border-[#414760] bg-[#22263a] px-3 py-2 text-sm text-white outline-none placeholder:text-[#8c94b0] focus:border-[#9d8cf0]" />
+        <button type="submit" disabled={loading} className="rounded-xl bg-[#8055d6] px-3 py-2 text-xs font-black text-white disabled:opacity-50">Search</button>
+      </form>
+      <div className="flex items-center justify-between px-3 pt-2">
+        <span className="text-[10px] font-bold uppercase tracking-wider text-[#aeb7d5]">{query.trim() ? `Results for “${query.trim()}”` : "Trending stickers"}</span>
+        <button type="button" onClick={() => { setQuery(""); void loadStickers(""); }} className="text-[10px] font-bold text-[#b9a8ff]">Trending</button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto p-2">
+        {loading ? <p className="py-10 text-center text-xs text-[#aeb7d5]">Loading stickers…</p> : error ? <p role="alert" className="px-3 py-8 text-center text-xs leading-5 text-rose-300">{error}</p> : stickers.length === 0 ? <p className="py-10 text-center text-xs text-[#aeb7d5]">No stickers found. Try another search.</p> : <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">{stickers.map((sticker) => {
+          const sendUrl = sticker.images?.fixed_width?.url || sticker.images?.original?.url;
+          const previewUrl = sticker.images?.fixed_width_small?.url || sendUrl;
+          if (!sendUrl || !previewUrl) return null;
+          return <button key={sticker.id} type="button" title={sticker.title || "Send sticker"} onClick={() => onSelect(sendUrl)} className="flex aspect-square items-center justify-center overflow-hidden rounded-xl bg-[#252a3d] p-1 transition hover:bg-[#343953] focus:outline-none focus:ring-2 focus:ring-violet-400"><img src={previewUrl} alt={sticker.title || "GIPHY sticker"} loading="lazy" className="max-h-full max-w-full object-contain" /></button>;
+        })}</div>}
+      </div>
+      <div className="border-t border-[#34384d] px-3 py-2 text-center text-[9px] text-[#8c94b0]">Powered by GIPHY</div>
+    </div>
+  );
+}
+
 export default function Home() {
   const [supabase] = useState(() => createClient());
 
@@ -178,6 +269,7 @@ export default function Home() {
   const [friendError, setFriendError] = useState("");
   const [friendNotice, setFriendNotice] = useState("");
   const [incomingRequests, setIncomingRequests] = useState<FriendRequest[]>([]);
+  const [outgoingRequests, setOutgoingRequests] = useState<FriendRequest[]>([]);
   const [friends, setFriends] = useState<Friend[]>([]);
   const [friendsLoading, setFriendsLoading] = useState(false);
   const [chatSection, setChatSection] = useState<"friends" | "requests">("friends");
@@ -219,6 +311,8 @@ export default function Home() {
   const [watchSending, setWatchSending] = useState(false);
   const [watchChatError, setWatchChatError] = useState("");
   const watchScrollRef = useRef<HTMLDivElement>(null);
+  const [stickerPickerTarget, setStickerPickerTarget] = useState<StickerTarget | null>(null);
+  const [stickerSending, setStickerSending] = useState(false);
 
   // Community suggestion feed
   const [suggestionText, setSuggestionText] = useState("");
@@ -227,6 +321,12 @@ export default function Home() {
   const [postingSuggestion, setPostingSuggestion] = useState(false);
   const [suggestionError, setSuggestionError] = useState("");
   const [isAdmin, setIsAdmin] = useState(false);
+  const [theme, setTheme] = useState<AnimeTheme>("dark");
+  const [globalTheme, setGlobalTheme] = useState<AnimeTheme>("dark");
+  const [themeMenuOpen, setThemeMenuOpen] = useState(false);
+  const [themeSaving, setThemeSaving] = useState(false);
+  const [themeMessage, setThemeMessage] = useState("");
+  const [avatarZoomUrl, setAvatarZoomUrl] = useState<string | null>(null);
   const [deletingSuggestionId, setDeletingSuggestionId] = useState<string | null>(null);
 
   // Monthly community anime theme voting and live site activity.
@@ -276,7 +376,7 @@ export default function Home() {
   }
 
   function AdminName({ value }: { value: string }) {
-    if (!isAnimeZoneAdmin(value)) return <>{value}</>;
+    if (!isAnimeZoneAdmin(value)) return <span className="inline-flex items-center gap-1.5">{value}<span className="rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-black tracking-wide text-emerald-400">JUNIOR</span></span>;
     return <span className="inline-flex items-center gap-1"><span className="bg-gradient-to-r from-red-500 via-amber-400 via-green-500 via-cyan-500 via-blue-500 to-fuchsia-500 bg-clip-text font-black text-transparent">{value}</span><span aria-label="Anime Zone admin" title="Anime Zone admin" className="text-red-500">👑</span></span>;
   }
 
@@ -483,6 +583,8 @@ export default function Home() {
       const { error: requestError } = await supabase.rpc("anime_send_friend_request", { target_user_id: targetUserId });
       if (requestError) throw requestError;
       setFriendNotice("Friend request sent!");
+      setSelectedGlobalMember((current) => current?.user_id === targetUserId ? null : current);
+      setOutgoingRequests((current) => current.some((row) => row.recipient_id === targetUserId && row.status === "pending") ? current : [...current, { id: `local-${targetUserId}`, sender_id: profile?.user_id || "", recipient_id: targetUserId, status: "pending", created_at: new Date().toISOString() }]);
       setFriendSearchResults((current) => current.filter((person) => person.user_id !== targetUserId));
       await loadFriendData();
     } catch (err) {
@@ -525,6 +627,7 @@ export default function Home() {
 
       const rows = (requestRows || []) as FriendRequest[];
       setIncomingRequests(rows.filter((row) => row.status === "pending" && row.recipient_id === currentUserId));
+      setOutgoingRequests(rows.filter((row) => row.status === "pending" && row.sender_id === currentUserId));
       const accepted = rows.filter((row) => row.status === "accepted");
       const friendIds = accepted.map((row) => row.sender_id === currentUserId ? row.recipient_id : row.sender_id);
       if (friendIds.length === 0) {
@@ -1040,6 +1143,42 @@ export default function Home() {
     }
   }
 
+  async function sendAnimeZoneSticker(url: string, target: StickerTarget) {
+    if (stickerSending) return;
+    setStickerSending(true);
+    const content = `${ANIME_ZONE_STICKER_PREFIX}${url}`;
+    try {
+      const { data: auth, error: authError } = await supabase.auth.getUser();
+      if (authError) throw authError;
+      if (!auth.user) throw new Error("Please sign in again to send a sticker.");
+
+      if (target === "dm") {
+        if (!selectedChatFriend) throw new Error("Open a friend's chat before sending a sticker.");
+        const { error: insertError } = await supabase.from("anime_direct_messages").insert({ sender_id: auth.user.id, recipient_id: selectedChatFriend.user_id, content });
+        if (insertError) throw insertError;
+        await loadChatMessages(selectedChatFriend.user_id, false);
+        await loadUnreadMessages(auth.user.id);
+      } else if (target === "global") {
+        const { error: insertError } = await supabase.from("anime_global_messages").insert({ user_id: auth.user.id, content, reply_to: globalReplyTo?.id || null });
+        if (insertError) throw insertError;
+        setGlobalReplyTo(null);
+        await loadGlobalMessages();
+      } else {
+        const { error: insertError } = await supabase.from("anime_watch_messages").insert({ user_id: auth.user.id, content });
+        if (insertError) throw insertError;
+        await loadWatchMessages();
+      }
+      setStickerPickerTarget(null);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Could not send sticker.";
+      if (target === "dm") setChatError(message);
+      else if (target === "global") setGlobalError(message);
+      else setWatchChatError(message);
+    } finally {
+      setStickerSending(false);
+    }
+  }
+
   async function openMemberProfile(userId: string, fallbackUsername: string) {
     try {
       const [{ data: name }, { data: person }] = await Promise.all([
@@ -1194,6 +1333,110 @@ export default function Home() {
       setSuggestionsLoading(false);
     }
   }
+
+  const validAnimeTheme = (value: unknown): value is AnimeTheme =>
+    ANIME_THEMES.some((item) => item.id === value);
+
+  async function loadAnimeTheme() {
+    try {
+      const { data: auth } = await supabase.auth.getUser();
+      if (!auth.user) return;
+      const [{ data: globalRow, error: globalError }, { data: personalRow, error: personalError }] = await Promise.all([
+        supabase.from("anime_zone_settings").select("global_theme").eq("id", true).maybeSingle(),
+        supabase.from("anime_member_preferences").select("theme_override").eq("user_id", auth.user.id).maybeSingle(),
+      ]);
+      if (globalError) throw globalError;
+      if (personalError) throw personalError;
+      const nextGlobal = validAnimeTheme(globalRow?.global_theme) ? globalRow.global_theme : "dark";
+      const personal = personalRow?.theme_override;
+      setGlobalTheme(nextGlobal);
+      setTheme(validAnimeTheme(personal) ? personal : nextGlobal);
+    } catch (err) {
+      console.warn("Theme settings could not be loaded:", err);
+      try {
+        const saved = window.localStorage.getItem("az_theme_local");
+        if (validAnimeTheme(saved)) setTheme(saved);
+      } catch { /* local theme fallback is optional */ }
+    }
+  }
+
+  async function savePersonalTheme(nextTheme: AnimeTheme) {
+    setThemeSaving(true);
+    setThemeMessage("");
+    try {
+      const { data: auth, error: authError } = await supabase.auth.getUser();
+      if (authError) throw authError;
+      if (!auth.user) throw new Error("Please sign in again.");
+      const { error: saveError } = await supabase.from("anime_member_preferences").upsert({
+        user_id: auth.user.id, theme_override: nextTheme, updated_at: new Date().toISOString(),
+      }, { onConflict: "user_id" });
+      if (saveError) throw saveError;
+      setTheme(nextTheme);
+      try { window.localStorage.setItem("az_theme_local", nextTheme); } catch { /* optional */ }
+      setThemeMessage("Your theme is saved on your account.");
+    } catch (err) {
+      setThemeMessage(err instanceof Error ? err.message : "Could not save your theme.");
+    } finally {
+      setThemeSaving(false);
+    }
+  }
+
+  async function followCommunityTheme() {
+    setThemeSaving(true);
+    setThemeMessage("");
+    try {
+      const { data: auth, error: authError } = await supabase.auth.getUser();
+      if (authError) throw authError;
+      if (!auth.user) throw new Error("Please sign in again.");
+      const { error: saveError } = await supabase.from("anime_member_preferences").upsert({
+        user_id: auth.user.id, theme_override: null, updated_at: new Date().toISOString(),
+      }, { onConflict: "user_id" });
+      if (saveError) throw saveError;
+      setTheme(globalTheme);
+      try { window.localStorage.removeItem("az_theme_local"); } catch { /* optional */ }
+      setThemeMessage("You're now following the Anime Zone default theme.");
+    } catch (err) {
+      setThemeMessage(err instanceof Error ? err.message : "Could not reset your theme.");
+    } finally {
+      setThemeSaving(false);
+    }
+  }
+
+  async function saveGlobalTheme(nextTheme: AnimeTheme) {
+    if (!isAdmin || themeSaving) return;
+    setThemeSaving(true);
+    setThemeMessage("");
+    try {
+      const { data: auth, error: authError } = await supabase.auth.getUser();
+      if (authError) throw authError;
+      if (!auth.user) throw new Error("Please sign in again.");
+      const { error: saveError } = await supabase.from("anime_zone_settings").update({
+        global_theme: nextTheme, updated_by: auth.user.id, updated_at: new Date().toISOString(),
+      }).eq("id", true);
+      if (saveError) throw saveError;
+      setGlobalTheme(nextTheme);
+      // An admin without a personal override follows the new community theme.
+      const { data: preference } = await supabase.from("anime_member_preferences").select("theme_override").eq("user_id", auth.user.id).maybeSingle();
+      if (!validAnimeTheme(preference?.theme_override)) setTheme(nextTheme);
+      setThemeMessage("The Anime Zone default theme has been updated for everyone.");
+    } catch (err) {
+      setThemeMessage(err instanceof Error ? err.message : "Could not update the community theme.");
+    } finally {
+      setThemeSaving(false);
+    }
+  }
+
+  useEffect(() => {
+    if (screen !== "lobby") return;
+    void loadAnimeTheme();
+    const channel = supabase.channel("anime-zone-theme-live")
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "anime_zone_settings" }, () => { void loadAnimeTheme(); })
+      .subscribe();
+    // Poll as a fallback for projects where Realtime is not enabled for this table.
+    const timer = window.setInterval(() => { void loadAnimeTheme(); }, 30000);
+    return () => { window.clearInterval(timer); void supabase.removeChannel(channel); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen]);
 
   async function refreshAdminStatus() {
     try {
@@ -2087,9 +2330,27 @@ export default function Home() {
   }
 
   return (
-    <main className="relative min-h-screen overflow-hidden bg-[#11131d] pb-24 text-[#f4f5fb] before:pointer-events-none before:fixed before:inset-0 before:bg-[radial-gradient(ellipse_at_10%_0%,rgba(75,55,130,0.22),transparent_35%),radial-gradient(ellipse_at_90%_35%,rgba(8,90,120,0.16),transparent_35%)] before:content-['']">
+    <main data-az-theme={theme} className="az-theme-root relative min-h-screen overflow-hidden bg-[#11131d] pb-24 text-[#f4f5fb] before:pointer-events-none before:fixed before:inset-0 before:bg-[radial-gradient(ellipse_at_10%_0%,rgba(75,55,130,0.22),transparent_35%),radial-gradient(ellipse_at_90%_35%,rgba(8,90,120,0.16),transparent_35%)] before:content-['']">
+      {(tab === "chat" || tab === "global") && <div aria-hidden="true" className="pointer-events-none fixed inset-0 z-40 overflow-hidden">{Array.from({ length: 42 }, (_, index) => <span key={index} className="az-snowflake" style={{ left: `${(index * 37) % 100}%`, fontSize: `${8 + (index % 5) * 3}px`, animationDuration: `${7 + (index % 9) * 1.35}s`, animationDelay: `${-((index * 1.7) % 18)}s`, opacity: 0.35 + (index % 5) * 0.12 }}>❄</span>)}</div>}
+      <style>{`
+        .az-theme-root { transition: background-color .2s ease, color .2s ease; }
+        @keyframes az-snow-fall { 0% { transform:translate3d(0,-8vh,0) rotate(0deg); opacity:0; } 10% { opacity:.85; } 90% { opacity:.75; } 100% { transform:translate3d(35px,108vh,0) rotate(360deg); opacity:0; } }
+        .az-snowflake { position:fixed; top:-8vh; z-index:40; pointer-events:none; color:rgba(210,238,255,.9); text-shadow:0 0 8px rgba(125,211,252,.55); animation-name:az-snow-fall; animation-timing-function:linear; animation-iteration-count:infinite; user-select:none; }
+        @media (prefers-reduced-motion: reduce) { .az-snowflake { animation:none; display:none; } }
+        .az-theme-root[data-az-theme="light"] { background:#f4f6fb; color:#20243a; }
+        .az-theme-root[data-az-theme="neon-blue"] { background:#061321; color:#e0f5ff; }
+        .az-theme-root[data-az-theme="neon-purple"] { background:#160d25; color:#f4eaff; }
+        .az-theme-root[data-az-theme="snow-blue"] { background:#eaf7ff; color:#15314a; }
+        .az-theme-root[data-az-theme="light"] .bg-\[\#1c2030\], .az-theme-root[data-az-theme="light"] .bg-\[\#171a27\], .az-theme-root[data-az-theme="light"] .bg-\[\#202437\] { background-color:#fff !important; }
+        .az-theme-root[data-az-theme="snow-blue"] .bg-\[\#1c2030\], .az-theme-root[data-az-theme="snow-blue"] .bg-\[\#171a27\], .az-theme-root[data-az-theme="snow-blue"] .bg-\[\#202437\] { background-color:#dff2ff !important; }
+        .az-theme-root[data-az-theme="neon-blue"] .bg-\[\#1c2030\], .az-theme-root[data-az-theme="neon-blue"] .bg-\[\#171a27\] { background-color:#0b2238 !important; box-shadow:0 0 18px #0ea5e933; }
+        .az-theme-root[data-az-theme="neon-purple"] .bg-\[\#1c2030\], .az-theme-root[data-az-theme="neon-purple"] .bg-\[\#171a27\] { background-color:#26143b !important; box-shadow:0 0 18px #a855f733; }
+        .az-theme-root[data-az-theme="light"] button.text-white, .az-theme-root[data-az-theme="snow-blue"] button.text-white { color:#fff !important; }
+        .az-theme-root[data-az-theme="light"] .text-\[\#a5abc2\], .az-theme-root[data-az-theme="snow-blue"] .text-\[\#a5abc2\], .az-theme-root[data-az-theme="light"] .text-\[\#929ab8\], .az-theme-root[data-az-theme="snow-blue"] .text-\[\#929ab8\] { color:#536b82 !important; }
+        @media (max-width: 640px) { .az-theme-root { padding-bottom: calc(5.5rem + env(safe-area-inset-bottom)); } }
+      `}</style>
       <div className="relative z-10 mx-auto max-w-7xl px-6 sm:px-8">
-        <header className="flex items-center justify-between gap-4 py-5">
+        {(tab === "lobby" || tab === "chat" || tab === "leaderboard") && <header className="flex items-center justify-between gap-4 py-5">
           <div className="flex min-w-0 items-center gap-3">
             <button type="button" onClick={() => {
               setDisplayName(profile?.display_name || username); setBio(profile?.bio || "");
@@ -2111,9 +2372,20 @@ export default function Home() {
               <p className="text-lg font-black tracking-[.12em] text-white">ANIME ZONE</p>
               <p className="text-[10px] tracking-[.2em] text-[#9ba0b8]">OUT OF THIS WORLD</p>
             </div>
+            <div className="relative">
+              <button type="button" onClick={() => setThemeMenuOpen((open) => !open)} aria-label="Choose theme" title="Choose theme" className="rounded-xl border border-[#41445b] bg-[#202333] px-3 py-2 text-sm font-bold text-white hover:bg-[#30354b]">🎨</button>
+              {themeMenuOpen && <div className="absolute right-0 top-12 z-[80] w-64 rounded-2xl border border-[#414760] bg-[#1b1f2e] p-3 text-white shadow-2xl">
+                <p className="px-2 pb-2 text-xs font-black uppercase tracking-wider text-[#aeb7d5]">Your theme</p>
+                {ANIME_THEMES.map((item) => <button key={item.id} type="button" onClick={() => void savePersonalTheme(item.id)} disabled={themeSaving} className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm hover:bg-[#30364c] ${theme === item.id ? "bg-[#30364c]" : ""}`}><span>{item.emoji}</span><span className="flex-1">{item.label}</span>{theme === item.id && <span>✓</span>}</button>)}
+                <button type="button" onClick={() => void followCommunityTheme()} disabled={themeSaving} className="mt-2 w-full rounded-xl border border-[#414760] px-3 py-2 text-left text-xs font-bold text-[#cbd5e1] hover:bg-[#30364c]">↩ Use community default</button>
+        {isAdmin && <><div className="my-2 border-t border-[#414760]"/><p className="px-2 pb-2 text-xs font-black uppercase tracking-wider text-amber-300">Admin · Everyone's default</p>{ANIME_THEMES.map((item) => <button key={`global-${item.id}`} type="button" onClick={() => void saveGlobalTheme(item.id)} disabled={themeSaving} className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm hover:bg-[#30364c] ${globalTheme === item.id ? "bg-[#30364c]" : ""}`}><span>{item.emoji}</span><span className="flex-1">{item.label}</span>{globalTheme === item.id && <span>✓</span>}</button>)}</>}
+                {themeMessage && <p className="mt-2 rounded-lg bg-black/20 p-2 text-[11px] text-[#cbd5e1]">{themeMessage}</p>}
+                <p className="mt-2 text-[10px] leading-4 text-[#929ab8]">Personal theme overrides the community default. Admin default applies to members without a personal choice.</p>
+              </div>}
+            </div>
             <button type="button" onClick={() => void logOut()} disabled={loading} className="rounded-xl border border-[#41445b] bg-[#202333] px-3 py-2 text-xs font-bold text-[#d8daea] hover:bg-[#30354b] disabled:opacity-50">{loading ? "…" : "Log out"}</button>
           </div>
-        </header>
+        </header>}
 
         {tab === "lobby" ? (
           <div className="mx-auto grid max-w-7xl grid-cols-1 gap-6 pb-8 lg:grid-cols-[minmax(0,1fr)_320px]">
@@ -2127,47 +2399,47 @@ export default function Home() {
                   <div className="mt-4 space-y-3">{announcements.map((item) => <article key={item.id} className="rounded-2xl bg-[#24293a] p-4"><p className="whitespace-pre-wrap break-words text-sm leading-6 text-white">{item.message}</p><time className="mt-2 block text-[10px] text-[#929ab8]">{new Date(item.created_at).toLocaleString()}</time></article>)}</div>}
                 {isAdmin && <div className="mt-4 border-t border-[#363b50] pt-4"><p className="mb-2 text-xs font-bold text-[#c2c8e0]">ADMIN · POST AN ANNOUNCEMENT</p><textarea value={announcementDraft} onChange={(e) => setAnnouncementDraft(e.target.value)} maxLength={1000} rows={3} placeholder="Write an update for everyone…" className="w-full rounded-xl border border-[#414760] bg-[#151927] p-3 text-sm text-white outline-none placeholder:text-[#737b98] focus:border-[#8b7be0]" /><button type="button" onClick={() => void postAnnouncement()} disabled={!announcementDraft.trim() || announcementSending} className="mt-2 rounded-xl bg-[#7564d8] px-4 py-2.5 text-xs font-black text-white disabled:opacity-50">{announcementSending ? "Publishing…" : "Publish announcement"}</button>{announcementError && <p className="mt-2 text-xs text-rose-300">{announcementError}</p>}</div>}
               </section>
-              <div className="rounded-3xl border border-[#ece8f4] bg-white p-5 shadow-sm sm:p-7">
+              <div className="rounded-3xl border border-[#34384d] bg-[#1c2030] p-5 shadow-sm sm:p-7">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <p className="text-xs font-bold uppercase tracking-[.2em] text-[#8b5cf6]">Your anime community</p>
-                    <h1 className="mt-2 text-3xl font-black tracking-tight text-[#282438] sm:text-4xl">Welcome back, {profile?.display_name || username || "Anime fan"}.</h1>
-                    <p className="mt-2 text-sm text-[#817b91]">See what's happening across Anime Zone today.</p>
+                    <h1 className="mt-2 text-3xl font-black tracking-tight text-white sm:text-4xl">Welcome back, {profile?.display_name || username || "Anime fan"}.</h1>
+                    <p className="mt-2 text-sm text-[#a5abc2]">See what's happening across Anime Zone today.</p>
                   </div>
                   <button type="button" onClick={() => setTab("global")} className="rounded-full bg-[#8055d6] px-5 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-[#7045c5]">Join Global Chat <span aria-hidden="true">→</span></button>
                 </div>
-                <div className="mt-6 flex flex-wrap items-center gap-4 border-t border-[#f0edf5] pt-4 text-xs font-semibold text-[#777184]">
+                <div className="mt-6 flex flex-wrap items-center gap-4 border-t border-[#303449] pt-4 text-xs font-semibold text-[#929ab8]">
                   <span><span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-emerald-500" />{onlineNow} members online</span>
                   <span>{siteVisits.toLocaleString()} community visits</span>
                   <span>Out of this world ✦</span>
                 </div>
               </div>
 
-              <section className="rounded-3xl border border-[#ece8f4] bg-white p-5 shadow-sm sm:p-6">
+              <section className="rounded-3xl border border-[#34384d] bg-[#1c2030] p-5 shadow-sm sm:p-6">
                 <div className="flex flex-wrap items-end justify-between gap-3">
-                  <div><p className="text-xs font-bold uppercase tracking-[.18em] text-[#8b5cf6]">Community decides</p><h2 className="mt-1 text-2xl font-black text-[#282438]">🗳️ Monthly Anime</h2><p className="mt-1 text-sm text-[#817b91]">Vote for the anime that should represent Anime Zone this month.</p></div>
+                  <div><p className="text-xs font-bold uppercase tracking-[.18em] text-[#8b5cf6]">Community decides</p><h2 className="mt-1 text-2xl font-black text-white">🗳️ Monthly Anime</h2><p className="mt-1 text-sm text-[#a5abc2]">Vote for the anime that should represent Anime Zone this month.</p></div>
                   <span className="rounded-full bg-[#f3efff] px-3 py-1.5 text-xs font-bold text-[#7954c7]">{getSouthAfricaMonthKey()}</span>
                 </div>
                 <div className="mt-5 grid gap-2 sm:grid-cols-2">
-                  {monthlyVotes.map((item, index) => <button key={item.anime_name} type="button" disabled={monthlyVoteLoading} onClick={() => void castMonthlyAnimeVote(item.anime_name)} className={`rounded-2xl border p-4 text-left transition hover:border-[#bda6ed] disabled:cursor-not-allowed disabled:opacity-60 ${item.my_vote ? "border-[#9b7be1] bg-[#f5f0ff]" : "border-[#eeeaf4] bg-white hover:bg-[#fbf9ff]"}`}><div className="flex items-center justify-between gap-2"><span className="font-bold text-[#302b3d]">{index + 1}. {item.anime_name}</span><span className="rounded-full bg-[#f0eaff] px-2.5 py-1 text-xs font-bold text-[#7954c7]">{item.votes}</span></div><div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[#f0edf5]"><div className="h-full rounded-full bg-[#8b5cf6]" style={{width: `${Math.max(0, ...monthlyVotes.map(v => v.votes)) ? item.votes / Math.max(1, ...monthlyVotes.map(v => v.votes)) * 100 : 0}%`}} /></div><p className="mt-2 text-xs font-semibold text-[#8055d6]">{item.my_vote ? "✓ Your vote" : "Vote for this anime"}</p></button>)}
+                  {monthlyVotes.map((item, index) => <button key={item.anime_name} type="button" disabled={monthlyVoteLoading} onClick={() => void castMonthlyAnimeVote(item.anime_name)} className={`rounded-2xl border p-4 text-left transition hover:border-[#bda6ed] disabled:cursor-not-allowed disabled:opacity-60 ${item.my_vote ? "border-[#9b7be1] bg-[#f5f0ff]" : "border-[#eeeaf4] bg-[#1c2030] hover:bg-[#fbf9ff]"}`}><div className="flex items-center justify-between gap-2"><span className="font-bold text-white">{index + 1}. {item.anime_name}</span><span className="rounded-full bg-[#f0eaff] px-2.5 py-1 text-xs font-bold text-[#7954c7]">{item.votes}</span></div><div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[#f0edf5]"><div className="h-full rounded-full bg-[#8b5cf6]" style={{width: `${Math.max(0, ...monthlyVotes.map(v => v.votes)) ? item.votes / Math.max(1, ...monthlyVotes.map(v => v.votes)) * 100 : 0}%`}} /></div><p className="mt-2 text-xs font-semibold text-[#8055d6]">{item.my_vote ? "✓ Your vote" : "Vote for this anime"}</p></button>)}
                 </div>
-                {monthlyVotes.length === 0 && !monthlyVoteLoading && <p className="mt-4 text-sm text-[#817b91]">Monthly voting options are loading or not available yet.</p>}
-                {monthlyVoteLoading && <p className="mt-3 text-xs text-[#817b91]">Updating votes…</p>}
+                {monthlyVotes.length === 0 && !monthlyVoteLoading && <p className="mt-4 text-sm text-[#a5abc2]">Monthly voting options are loading or not available yet.</p>}
+                {monthlyVoteLoading && <p className="mt-3 text-xs text-[#a5abc2]">Updating votes…</p>}
                 {monthlyVoteError && <p role="alert" className="mt-3 rounded-xl bg-red-50 p-3 text-sm text-red-600">{monthlyVoteError}</p>}
                 <p className="mt-4 text-xs text-[#9993a5]">Voting resets each calendar month. You can change your vote before the month ends.</p>
               </section>
 
-              <section className="rounded-3xl border border-[#ece8f4] bg-white p-5 shadow-sm sm:p-6">
-                <div className="flex items-center justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-[.18em] text-[#8b5cf6]">Community ideas</p><h2 className="mt-1 text-xl font-black text-[#282438]">Help shape Anime Zone</h2></div><button type="button" onClick={() => void loadSuggestions()} disabled={suggestionsLoading} className="rounded-full px-3 py-2 text-xs font-bold text-[#8055d6] hover:bg-[#f5f0ff]">{suggestionsLoading ? "Loading…" : "Refresh"}</button></div>
-                <div className="mt-4 rounded-2xl bg-[#faf8fd] p-3"><textarea value={suggestionText} onChange={(event) => {setSuggestionText(event.target.value);setSuggestionError("");}} maxLength={300} rows={2} placeholder="Suggest a feature or improvement…" className="w-full resize-y bg-transparent px-2 py-1 text-sm text-[#302b3d] outline-none placeholder:text-[#aaa4b2]"/><div className="flex items-center justify-between"><span className="text-xs text-[#9993a5]">{suggestionText.length}/300</span><button type="button" onClick={() => void postSuggestion()} disabled={postingSuggestion || !suggestionText.trim()} className="rounded-full bg-[#8055d6] px-4 py-2 text-xs font-bold text-white disabled:opacity-50">{postingSuggestion ? "Sending…" : "Share idea"}</button></div></div>
+              <section className="rounded-3xl border border-[#34384d] bg-[#1c2030] p-5 shadow-sm sm:p-6">
+                <div className="flex items-center justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-[.18em] text-[#8b5cf6]">Community ideas</p><h2 className="mt-1 text-xl font-black text-white">Help shape Anime Zone</h2></div><button type="button" onClick={() => void loadSuggestions()} disabled={suggestionsLoading} className="rounded-full px-3 py-2 text-xs font-bold text-[#8055d6] hover:bg-[#f5f0ff]">{suggestionsLoading ? "Loading…" : "Refresh"}</button></div>
+                <div className="mt-4 rounded-2xl bg-[#faf8fd] p-3"><textarea value={suggestionText} onChange={(event) => {setSuggestionText(event.target.value);setSuggestionError("");}} maxLength={300} rows={2} placeholder="Suggest a feature or improvement…" className="w-full resize-y bg-transparent px-2 py-1 text-sm text-white outline-none placeholder:text-[#aaa4b2]"/><div className="flex items-center justify-between"><span className="text-xs text-[#9993a5]">{suggestionText.length}/300</span><button type="button" onClick={() => void postSuggestion()} disabled={postingSuggestion || !suggestionText.trim()} className="rounded-full bg-[#8055d6] px-4 py-2 text-xs font-bold text-white disabled:opacity-50">{postingSuggestion ? "Sending…" : "Share idea"}</button></div></div>
                 {suggestionError && <p role="alert" className="mt-3 text-sm text-red-600">{suggestionError}</p>}
-                <div className="mt-4 divide-y divide-[#f0edf5]">{suggestions.slice(0,5).map((item) => <article key={item.id} className="py-4 first:pt-1"><div className="flex items-center justify-between gap-3"><div className="flex min-w-0 items-center gap-2"><button type="button" onClick={() => void openMemberProfile(item.user_id, item.username)} aria-label={`View @${item.username}'s profile`} className="h-9 w-9 shrink-0 overflow-hidden rounded-full bg-[#eeeaff] ring-1 ring-[#ddd4f5]">{item.avatar_url ? <img src={item.avatar_url} alt="" className="h-full w-full object-cover" /> : <span className="flex h-full w-full items-center justify-center text-sm font-black text-[#7561c8]">{item.username.charAt(0).toUpperCase()}</span>}</button><button type="button" onClick={() => void openMemberProfile(item.user_id, item.username)} className="truncate text-sm font-bold text-[#302b3d] hover:text-[#8055d6]">@{item.username}</button></div><time className="shrink-0 text-xs text-[#9993a5]">{new Date(item.created_at).toLocaleDateString()}</time></div><p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-[#5f596c]">{item.content}</p><div className="mt-3 flex gap-3 text-xs"><button type="button" onClick={() => void voteOnSuggestion(item.id, 1)} className={`font-bold ${item.myVote === 1 ? "text-[#8055d6]" : "text-[#8e879b]"}`}>👍 {item.likes}</button><button type="button" onClick={() => void voteOnSuggestion(item.id, -1)} className={`font-bold ${item.myVote === -1 ? "text-rose-600" : "text-[#8e879b]"}`}>👎 {item.dislikes}</button>{isAdmin && <button type="button" onClick={() => void deleteSuggestion(item.id)} disabled={deletingSuggestionId === item.id} className="ml-auto font-bold text-rose-600">Delete</button>}</div></article>)}{suggestions.length === 0 && <p className="py-6 text-center text-sm text-[#9993a5]">No community ideas yet. Start one.</p>}</div>
+                <div className="mt-4 divide-y divide-[#f0edf5]">{suggestions.slice(0,5).map((item) => <article key={item.id} className="py-4 first:pt-1"><div className="flex items-center justify-between gap-3"><div className="flex min-w-0 items-center gap-2"><button type="button" onClick={() => void openMemberProfile(item.user_id, item.username)} aria-label={`View @${item.username}'s profile`} className="h-9 w-9 shrink-0 overflow-hidden rounded-full bg-[#eeeaff] ring-1 ring-[#ddd4f5]">{item.avatar_url ? <img src={item.avatar_url} alt="" className="h-full w-full object-cover" /> : <span className="flex h-full w-full items-center justify-center text-sm font-black text-[#7561c8]">{item.username.charAt(0).toUpperCase()}</span>}</button><button type="button" onClick={() => void openMemberProfile(item.user_id, item.username)} className="truncate text-sm font-bold text-white hover:text-[#8055d6]">@{item.username}</button></div><time className="shrink-0 text-xs text-[#9993a5]">{new Date(item.created_at).toLocaleDateString()}</time></div><p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-[#5f596c]">{item.content}</p><div className="mt-3 flex gap-3 text-xs"><button type="button" onClick={() => void voteOnSuggestion(item.id, 1)} className={`font-bold ${item.myVote === 1 ? "text-[#8055d6]" : "text-[#8e879b]"}`}>👍 {item.likes}</button><button type="button" onClick={() => void voteOnSuggestion(item.id, -1)} className={`font-bold ${item.myVote === -1 ? "text-rose-600" : "text-[#8e879b]"}`}>👎 {item.dislikes}</button>{isAdmin && <button type="button" onClick={() => void deleteSuggestion(item.id)} disabled={deletingSuggestionId === item.id} className="ml-auto font-bold text-rose-600">Delete</button>}</div></article>)}{suggestions.length === 0 && <p className="py-6 text-center text-sm text-[#9993a5]">No community ideas yet. Start one.</p>}</div>
               </section>
             </section>
 
             <aside className="space-y-5 lg:sticky lg:top-5 lg:self-start">
-              <section className="rounded-3xl border border-[#ece8f4] bg-white p-5 shadow-sm"><h2 className="font-black text-[#302b3d]">Your space</h2><div className="mt-4 space-y-1"><button type="button" onClick={() => setTab("global")} className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-semibold text-[#5f596c] hover:bg-[#f7f3ff]"><span className="text-lg">🌐</span> Global Chat <span className="ml-auto text-[#8055d6]">→</span></button><button type="button" onClick={() => setTab("chat")} className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-semibold text-[#5f596c] hover:bg-[#f7f3ff]"><span className="text-lg">👥</span> Friends & messages <span className="ml-auto text-[#8055d6]">→</span></button><button type="button" onClick={() => setFriendSearchOpen(true)} className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-semibold text-[#5f596c] hover:bg-[#f7f3ff]"><span className="text-lg">＋</span> Find people <span className="ml-auto text-[#8055d6]">→</span></button></div></section>
-              <section className="rounded-3xl border border-[#ece8f4] bg-white p-5 shadow-sm"><h2 className="font-black text-[#302b3d]">Community status</h2><p className="mt-3 text-sm text-[#817b91]"><span className="mr-2 inline-block h-2 w-2 rounded-full bg-emerald-500" />{onlineNow} online now</p><p className="mt-2 text-sm text-[#817b91]">{friends.length} friends connected</p></section>
+              <section className="rounded-3xl border border-[#34384d] bg-[#1c2030] p-5 shadow-sm"><h2 className="font-black text-white">Your space</h2><div className="mt-4 space-y-1"><button type="button" onClick={() => setTab("global")} className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-semibold text-[#5f596c] hover:bg-[#f7f3ff]"><span className="text-lg">🌐</span> Global Chat <span className="ml-auto text-[#8055d6]">→</span></button><button type="button" onClick={() => setTab("chat")} className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-semibold text-[#5f596c] hover:bg-[#f7f3ff]"><span className="text-lg">👥</span> Friends & messages <span className="ml-auto text-[#8055d6]">→</span></button><button type="button" onClick={() => setFriendSearchOpen(true)} className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-semibold text-[#5f596c] hover:bg-[#f7f3ff]"><span className="text-lg">＋</span> Find people <span className="ml-auto text-[#8055d6]">→</span></button></div></section>
+              <section className="rounded-3xl border border-[#34384d] bg-[#1c2030] p-5 shadow-sm"><h2 className="font-black text-white">Community status</h2><p className="mt-3 text-sm text-[#a5abc2]"><span className="mr-2 inline-block h-2 w-2 rounded-full bg-emerald-500" />{onlineNow} online now</p><p className="mt-2 text-sm text-[#a5abc2]">{friends.length} friends connected</p></section>
             </aside>
           </div>
         ) : tab === "chat" ? (
@@ -2183,8 +2455,8 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="grid min-h-[680px] gap-5 lg:grid-cols-[minmax(280px,360px)_1fr]">
-              <aside className="overflow-hidden rounded-[1.8rem] border border-[#d9d4ff] bg-white/90 shadow-lg shadow-violet-100">
+            <div className="grid min-h-[min(680px,calc(100dvh-190px))] gap-5 lg:grid-cols-[minmax(280px,360px)_1fr]">
+              <aside className={`${selectedChatFriendId ? "hidden lg:block" : "block"} overflow-hidden rounded-[1.8rem] border border-[#34384d] bg-[#171a27] shadow-lg`}>
                 <div className="border-b border-[#ebe8ff] p-5">
                   <div className="flex items-center justify-between">
                     <h2 className="text-xl font-black">People</h2>
@@ -2226,9 +2498,9 @@ export default function Home() {
                 </div>
               </aside>
 
-              <section className="flex min-h-[680px] min-w-0 flex-col overflow-hidden rounded-[1.8rem] border border-[#d9d4ff] bg-white/95 shadow-lg shadow-violet-100">
+              <section className={`${selectedChatFriendId ? "flex" : "hidden lg:flex"} min-h-[min(680px,calc(100dvh-190px))] min-w-0 flex-col overflow-hidden rounded-[1.8rem] border border-[#34384d] bg-[#171a27] shadow-lg`}>
                 {selectedChatFriend ? <>
-                  <header className="flex items-center gap-3 border-b border-[#ebe8ff] px-5 py-4 sm:px-7">
+                  <header className="flex items-center gap-3 border-b border-[#303449] px-3 py-4 sm:px-7"><button type="button" onClick={() => setSelectedChatFriendId("")} className="rounded-lg bg-[#252a3d] px-3 py-2 text-sm font-bold text-white lg:hidden">← Back</button>
                     <span className="relative h-11 w-11 shrink-0 overflow-hidden rounded-full bg-[#e9e7ff]">
                       {selectedChatFriend.avatar_url ? <img src={selectedChatFriend.avatar_url} alt="" className="h-full w-full object-cover" /> : <span className="flex h-full w-full items-center justify-center font-black text-[#7561c8]">{selectedChatFriend.display_name?.charAt(0) || "?"}</span>}
                       <span className={`absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-white ${selectedChatFriend.last_seen_at && Date.now() - new Date(selectedChatFriend.last_seen_at).getTime() < 90000 ? "bg-emerald-500" : "bg-red-500"}`} />
@@ -2236,16 +2508,16 @@ export default function Home() {
                     <div className="min-w-0"><h2 className="truncate font-black">{selectedChatFriend.display_name || selectedChatFriend.username}</h2><p className="text-xs text-[#85809d]">{selectedChatFriend.last_seen_at && Date.now() - new Date(selectedChatFriend.last_seen_at).getTime() < 90000 ? "Online" : "Last seen " + (selectedChatFriend.last_seen_at ? new Date(selectedChatFriend.last_seen_at).toLocaleString() : "unknown")}</p></div>
                     <span className="ml-auto rounded-full bg-[#f1f0ff] px-3 py-1 text-xs font-bold text-[#7561c8]">Anime Zone DM</span>
                   </header>
-                  <div ref={chatScrollRef} className="flex-1 space-y-4 overflow-y-auto bg-gradient-to-b from-[#fcfbff] to-white p-5 sm:p-8">
+                  <div ref={chatScrollRef} className="flex-1 space-y-4 overflow-y-auto bg-[#10121b] p-4 text-white sm:p-8">
                     <div className="mx-auto mb-8 max-w-sm text-center"><img src="/az-logo.png" alt="Anime Zone" className="mx-auto h-14 w-14 rounded-2xl object-cover" /><p className="mt-3 font-black">Anime Zone</p><p className="mt-1 text-xs text-[#85809d]">This is the beginning of your conversation with {selectedChatFriend.display_name || selectedChatFriend.username}.</p></div>
                     {chatLoading && chatMessages.length === 0 ? <p className="text-center text-sm text-[#85809d]">Loading messages…</p> : chatMessages.map((message) => {
                       const mine = message.sender_id !== selectedChatFriend.user_id;
-                      return <div key={message.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}><div className={`max-w-[82%] rounded-3xl px-4 py-3 shadow-sm sm:max-w-[70%] ${mine ? "rounded-br-md bg-[#7954d8] text-white" : "rounded-bl-md bg-[#f0efff] text-[#30284e]"}`}><p className="whitespace-pre-wrap break-words text-sm leading-6">{message.content}</p><p className={`mt-1 text-right text-[10px] ${mine ? "text-white/70" : "text-[#85809d]"}`}>{new Date(message.created_at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}</p></div></div>;
+                      return <div key={message.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}><div className={`max-w-[82%] rounded-3xl px-4 py-3 shadow-sm sm:max-w-[70%] ${mine ? "rounded-br-md bg-[#7954d8] text-white" : "rounded-bl-md bg-[#f0efff] text-[#30284e]"}`}><>{getStickerUrl(message.content) ? <img src={getStickerUrl(message.content) || ""} alt="Sticker" className="max-h-48 max-w-full rounded-xl object-contain" /> : <p className="whitespace-pre-wrap break-words text-sm leading-6">{message.content}</p>}</><p className={`mt-1 text-right text-[10px] ${mine ? "text-white/70" : "text-[#85809d]"}`}>{new Date(message.created_at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}</p></div></div>;
                     })}
                   </div>
                   {chatError && <p role="alert" className="px-5 py-2 text-sm text-red-600">{chatError}</p>}
-                  <form onSubmit={sendChatMessage} className="flex items-center gap-3 border-t border-[#ebe8ff] bg-white p-4 sm:p-5">
-                    <input value={chatDraft} onChange={(event) => setChatDraft(event.target.value)} maxLength={2000} placeholder="Message…" className="min-w-0 flex-1 rounded-full border border-[#ddd7ff] bg-[#f8f7ff] px-5 py-4 text-sm text-[#30284e] outline-none placeholder:text-[#85809d] focus:border-[#9b83ef]" />
+                  <form onSubmit={sendChatMessage} className="flex items-center gap-2 border-t border-[#303449] bg-[#171a27] p-3 sm:gap-3 sm:p-5">
+                    <button type="button" title="Open sticker picker" onClick={() => setStickerPickerTarget((target) => target === "dm" ? null : "dm")} className="rounded-full border border-[#ddd7ff] bg-[#f8f7ff] px-3 py-3 text-xl">☻</button><input value={chatDraft} onChange={(event) => setChatDraft(event.target.value)} maxLength={2000} placeholder="Message…" className="min-w-0 flex-1 rounded-full border border-[#414760] bg-[#22263a] px-5 py-4 text-sm text-white outline-none placeholder:text-[#85809d] focus:border-[#9b83ef]" />
                     <button type="submit" disabled={!chatDraft.trim() || chatSending} className="rounded-full bg-[#8b5cf6] px-6 py-4 text-sm font-black text-white transition hover:bg-[#7c3aed] disabled:opacity-50">{chatSending ? "Sending…" : "Send"}</button>
                   </form>
                 </> : <div className="flex flex-1 flex-col items-center justify-center px-6 py-12 text-center"><img src="/az-logo.png" alt="Anime Zone Chat" className="h-20 w-20 rounded-3xl object-cover shadow-md" /><h2 className="mt-5 text-2xl font-black">Your Anime Zone chats</h2><p className="mt-2 max-w-sm text-sm leading-7 text-[#85809d]">Choose a friend from the list to open your private conversation. Your messages will appear here.</p></div>}
@@ -2254,11 +2526,12 @@ export default function Home() {
             {friendError && <p role="alert" className="rounded-xl bg-red-500/10 px-4 py-3 text-sm text-red-600">{friendError}</p>}
           </section>
         ) : tab === "global" ? (
-          <section className="fixed inset-x-0 bottom-[76px] top-[76px] z-10 flex min-h-0 flex-col bg-[#10121b] md:static md:mx-auto md:mb-6 md:h-[calc(100dvh-180px)] md:max-w-6xl md:rounded-3xl md:border md:border-[#34384d] md:shadow-2xl">
+          <section className="fixed inset-x-0 bottom-[76px] top-0 z-40 flex min-h-0 flex-col bg-[#10121b] md:static md:mx-auto md:mb-6 md:h-[calc(100dvh-90px)] md:max-w-none md:rounded-3xl md:border md:border-[#34384d] md:shadow-2xl">
             <header className="flex shrink-0 items-center gap-3 border-b border-[#303449] bg-[#171a27] px-4 py-3 sm:px-6 sm:py-4 md:rounded-t-3xl">
               <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[#f1eaff] text-xl">🌐</div>
               <div className="min-w-0"><h1 className="font-black text-white">Global Chat</h1><p className="text-xs text-[#a2a8c0]">Anime Zone community · Saved messages</p></div>
-              <span className="ml-auto rounded-full bg-emerald-500/15 px-3 py-1 text-[11px] font-bold text-emerald-300">● LIVE</span>{unreadMentionCount > 0 && <button type="button" onClick={() => void markMentionNotificationsRead()} className="rounded-full bg-rose-500 px-2.5 py-1 text-[11px] font-black text-white">🔔 {unreadMentionCount}</button>}
+              <button type="button" onClick={() => setThemeMenuOpen((open) => !open)} className="ml-auto rounded-full border border-[#414760] bg-[#252a3d] px-3 py-2 text-sm text-white" aria-label="Choose theme">🎨</button>
+              <span className="rounded-full bg-emerald-500/15 px-3 py-1 text-[11px] font-bold text-emerald-300">● LIVE</span>{unreadMentionCount > 0 && <button type="button" onClick={() => void markMentionNotificationsRead()} className="rounded-full bg-rose-500 px-2.5 py-1 text-[11px] font-black text-white">🔔 {unreadMentionCount}</button>}
               <button type="button" onClick={() => void loadGlobalMessages()} aria-label="Refresh chat" className="rounded-full px-3 py-2 text-sm font-bold text-[#8055d6] hover:bg-[#f7f3ff]">↻</button>
             </header>
             <div ref={globalScrollRef} className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain bg-[#10121b] px-3 py-5 sm:px-6 md:px-8">
@@ -2267,12 +2540,12 @@ export default function Home() {
               {globalLoading && globalMessages.length === 0 ? <p className="py-12 text-center text-sm text-[#85809d]">Loading messages…</p> : globalMessages.length === 0 ? <div className="py-16 text-center"><p className="text-4xl">💬</p><p className="mt-3 font-bold text-white">It's quiet in here</p><p className="mt-1 text-sm text-[#9993a5]">Start the first conversation.</p></div> : globalMessages.map((message) => {
                 const mine = message.user_id === profile?.user_id;
                 return <div key={message.id} onTouchStart={(event) => { const touch = event.touches[0]; globalTouchStart.current = { x: touch.clientX, y: touch.clientY }; }} onTouchEnd={(event) => { const start = globalTouchStart.current; if (!start) return; const touch = event.changedTouches[0]; const dx = touch.clientX - start.x; const dy = touch.clientY - start.y; if (Math.abs(dx) > 65 && Math.abs(dy) < 45) beginGlobalReply(message); globalTouchStart.current = null; }} className={`group flex w-full items-end gap-2 ${mine ? "justify-end" : "justify-start"}`}>
-                  <button type="button" onClick={() => setSelectedGlobalMember(message)} aria-label={`View ${message.username}'s profile`} className={`h-9 w-9 shrink-0 overflow-hidden rounded-full border border-[#414760] bg-[#252a3d] ${mine ? "order-2" : ""}`}>{message.avatar_url ? <img src={message.avatar_url} alt="" className="h-full w-full object-cover" /> : <span className="flex h-full w-full items-center justify-center text-sm text-white">{(message.display_name || message.username).charAt(0).toUpperCase()}</span>}</button>
+                  <div className={`flex shrink-0 flex-col gap-1 ${mine ? "order-2" : ""}`}><button type="button" onClick={() => setSelectedGlobalMember(message)} aria-label={`View ${message.username}'s profile`} className="h-9 w-9 overflow-hidden rounded-full border border-[#414760] bg-[#252a3d]">{message.avatar_url ? <img src={message.avatar_url} alt="" className="h-full w-full object-cover" /> : <span className="flex h-full w-full items-center justify-center text-sm text-white">{(message.display_name || message.username).charAt(0).toUpperCase()}</span>}</button>{message.avatar_url && <button type="button" onClick={() => setAvatarZoomUrl(message.avatar_url || null)} aria-label="Zoom profile picture" className="text-[9px] font-bold text-[#aeb7d5]">Zoom</button>}</div>
                   <div className={`w-fit max-w-[88%] sm:max-w-[72%] ${mine ? "items-end" : "items-start"}`}>
                     <button type="button" onClick={() => setSelectedGlobalMember(message)} className={`mb-1 px-2 text-sm font-bold ${mine ? "block text-right text-[#b6a7ff]" : "text-[#aeb7d5]"}`}>{mine ? "You" : message.display_name || <AdminName value={message.username} />} <span className="text-xs font-medium text-[#737c9a]">@<AdminName value={message.username} /></span></button>
                     <div className={`rounded-2xl px-4 py-3 shadow-sm ${mine ? "rounded-br-md bg-[#6554b8] text-white" : "rounded-bl-md border border-[#34394f] bg-[#202437] text-white"}`}>
                       {message.reply_to && <div className="mb-2 rounded-lg border-l-2 border-violet-300/70 bg-black/15 px-3 py-2 text-xs text-white/75"><span className="font-bold">Replying to @{message.reply_username || "member"}</span><p className="mt-1 line-clamp-2">{message.reply_preview || "Original message unavailable"}</p></div>}
-                      <p className="whitespace-pre-wrap break-words text-base leading-7">{message.content.split(/(@[a-zA-Z0-9_]+)/g).map((part, index) => part.startsWith("@") ? <span key={index} className="font-black text-[#d7c8ff]">{part}</span> : part)}</p>
+                      {getStickerUrl(message.content) ? <img src={getStickerUrl(message.content) || ""} alt="Sticker" className="max-h-52 max-w-full rounded-xl object-contain" /> : <p className="whitespace-pre-wrap break-words text-base leading-7">{message.content.split(/(@[a-zA-Z0-9_]+)/g).map((part, index) => part.startsWith("@") ? <span key={index} className="font-black text-[#d7c8ff]">{part}</span> : part)}</p>}
                     </div>
                     <div className={`mt-1 flex items-center gap-3 px-2 text-[10px] text-[#7e87a4] ${mine ? "justify-end" : ""}`}><span>{new Date(message.created_at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}</span><button type="button" onClick={() => beginGlobalReply(message)} className="font-bold text-[#b6a7ff] opacity-100 sm:opacity-0 sm:group-hover:opacity-100">↩ Reply</button></div>
                   </div>
@@ -2284,15 +2557,15 @@ export default function Home() {
               {globalReplyTo && <div className="mb-2 flex items-center gap-3 rounded-xl border-l-2 border-violet-400 bg-[#22263a] px-3 py-2"><div className="min-w-0 flex-1"><p className="text-[11px] font-black text-violet-200">Replying to @{globalReplyTo.username}</p><p className="truncate text-xs text-[#aeb7d5]">{globalReplyTo.content}</p></div><button type="button" onClick={() => setGlobalReplyTo(null)} className="rounded-lg px-2 py-1 text-sm text-[#c9cde0]" aria-label="Cancel reply">✕</button></div>}
               {mentionSuggestions.length > 0 && <div className="mb-2 max-h-48 overflow-y-auto rounded-xl border border-[#414760] bg-[#22263a] p-2 shadow-xl">{mentionSuggestions.map((person) => <button type="button" key={person.user_id} onClick={() => chooseGlobalMention(person)} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-white hover:bg-[#343953]"><span className="flex h-7 w-7 items-center justify-center rounded-full bg-[#51427f]">{person.username.charAt(0).toUpperCase()}</span><span className="font-bold">@{person.username}</span><span className="ml-auto text-xs text-[#9ba2bc]">{person.display_name}</span></button>)}</div>}
               {mentionSearchLoading && <p className="mb-1 px-2 text-[10px] text-[#9ba2bc]">Finding members…</p>}
-              <form onSubmit={sendGlobalMessage} className="flex items-end gap-2"><textarea value={globalDraft} onChange={(event) => setGlobalDraft(event.target.value)} maxLength={1000} rows={1} placeholder="Message everyone… use @ to mention" className="max-h-28 min-h-12 min-w-0 flex-1 resize-y rounded-2xl border border-[#414760] bg-[#22263a] px-4 py-3 text-base text-white outline-none placeholder:text-[#8c94b0] focus:border-[#9d8cf0]"/><button type="submit" disabled={!globalDraft.trim() || globalSending} className="flex h-12 shrink-0 items-center justify-center rounded-2xl bg-[#8055d6] px-5 text-sm font-bold text-white transition hover:bg-[#7045c5] disabled:opacity-50">{globalSending ? "…" : "Send"}</button></form>
+              <form onSubmit={sendGlobalMessage} className="flex items-end gap-2"><button type="button" title="Open sticker picker" onClick={() => setStickerPickerTarget((target) => target === "global" ? null : "global")} className="h-12 shrink-0 rounded-2xl border border-[#414760] bg-[#22263a] px-3 text-xl text-white">☻</button><textarea value={globalDraft} onChange={(event) => setGlobalDraft(event.target.value)} maxLength={1000} rows={1} placeholder="Message everyone… use @ to mention" className="max-h-28 min-h-12 min-w-0 flex-1 resize-y rounded-2xl border border-[#414760] bg-[#22263a] px-4 py-3 text-base text-white outline-none placeholder:text-[#8c94b0] focus:border-[#9d8cf0]"/><button type="submit" disabled={!globalDraft.trim() || globalSending} className="flex h-12 shrink-0 items-center justify-center rounded-2xl bg-[#8055d6] px-5 text-sm font-bold text-white transition hover:bg-[#7045c5] disabled:opacity-50">{globalSending ? "…" : "Send"}</button></form>
             </div>
           </section>
         ) : tab === "watch" ? (
-          <section className="mx-auto max-w-5xl space-y-5 pb-8 pt-4">
-            <header className="rounded-3xl border border-[#34384d] bg-[#1c2030] p-5 sm:p-6">
-              <p className="text-xs font-black uppercase tracking-[.2em] text-[#9b8cff]">Anime Zone together</p>
+          <section className="mx-auto w-full max-w-7xl space-y-4 px-2 pb-8 pt-3 sm:px-4">
+            <header className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-[#34384d] bg-[#1c2030] p-4 sm:p-6">
+              <div><p className="text-xs font-black uppercase tracking-[.2em] text-[#9b8cff]">Anime Zone together</p>
               <h1 className="mt-2 text-3xl font-black text-white">🎬 Watch Room</h1>
-              <p className="mt-2 text-sm text-[#a5abc2]">Watch the community video and chat with other Anime Zone members.</p>
+              <p className="mt-2 text-sm text-[#a5abc2]">Watch the community video and chat with other Anime Zone members.</p></div><button type="button" onClick={() => setThemeMenuOpen((open) => !open)} className="rounded-xl border border-[#414760] bg-[#252a3d] px-3 py-2 text-sm text-white" aria-label="Choose theme">🎨 Theme</button>
             </header>
 
             <section className="overflow-hidden rounded-3xl border border-[#34384d] bg-[#171a27] shadow-xl">
@@ -2300,7 +2573,7 @@ export default function Home() {
                 <h2 className="font-black text-white">Now playing</h2>
                 <span className="rounded-full bg-emerald-500/15 px-3 py-1 text-[10px] font-black text-emerald-300">SHARED VIDEO</span>
               </div>
-              <div className="aspect-video w-full bg-black">
+              <div className="aspect-video max-h-[72dvh] w-full bg-black">
                 {watchVideoLoading ? (
                   <div className="flex h-full items-center justify-center text-sm text-[#a5abc2]">Loading video…</div>
                 ) : !watchVideoUrl ? (
@@ -2340,20 +2613,31 @@ export default function Home() {
                     <div className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[#30364c] text-sm font-black text-white">{message.avatar_url ? <img src={message.avatar_url} alt="" className="h-full w-full object-cover" /> : message.display_name.charAt(0).toUpperCase()}</div>
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1"><span className="text-sm font-bold text-[#c7baff]"><AdminName value={message.username} /></span><time className="text-[10px] text-[#737c9a]">{new Date(message.created_at).toLocaleString()}</time></div>
-                      <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-white">{message.content}</p>
+                      {getStickerUrl(message.content) ? <img src={getStickerUrl(message.content) || ""} alt="Sticker" className="mt-1 max-h-48 max-w-full rounded-xl object-contain" /> : <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-white">{message.content}</p>}
                     </div>
                   </div>
                 ))}
               </div>
               {watchChatError && <p role="alert" className="border-t border-[#303449] bg-rose-500/10 px-4 py-2 text-xs text-rose-200">{watchChatError}</p>}
               <form onSubmit={sendWatchMessage} className="flex items-end gap-2 border-t border-[#303449] bg-[#171a27] p-3 sm:p-4">
-                <textarea value={watchDraft} onChange={(event) => setWatchDraft(event.target.value)} maxLength={1000} rows={1} placeholder="Chat about the video…" className="max-h-28 min-h-12 min-w-0 flex-1 resize-y rounded-2xl border border-[#414760] bg-[#22263a] px-4 py-3 text-sm text-white outline-none placeholder:text-[#8c94b0] focus:border-[#9d8cf0]" />
+                <button type="button" title="Open sticker picker" onClick={() => setStickerPickerTarget((target) => target === "watch" ? null : "watch")} className="h-12 shrink-0 rounded-2xl border border-[#414760] bg-[#22263a] px-3 text-xl text-white">☻</button><textarea value={watchDraft} onChange={(event) => setWatchDraft(event.target.value)} maxLength={1000} rows={1} placeholder="Chat about the video…" className="max-h-28 min-h-12 min-w-0 flex-1 resize-y rounded-2xl border border-[#414760] bg-[#22263a] px-4 py-3 text-sm text-white outline-none placeholder:text-[#8c94b0] focus:border-[#9d8cf0]" />
                 <button type="submit" disabled={!watchDraft.trim() || watchSending} className="h-12 shrink-0 rounded-2xl bg-[#8055d6] px-5 text-sm font-bold text-white disabled:opacity-50">{watchSending ? "…" : "Send"}</button>
               </form>
             </section>
           </section>
         ) : null}
       </div>
+
+      {stickerPickerTarget && <StickerPicker onClose={() => setStickerPickerTarget(null)} onSelect={(url) => void sendAnimeZoneSticker(url, stickerPickerTarget)} />}
+
+      {themeMenuOpen && (tab === "global" || tab === "watch") && <div className="fixed right-3 top-16 z-[95] max-h-[78dvh] w-[min(19rem,calc(100vw-1.5rem))] overflow-y-auto rounded-2xl border border-[#414760] bg-[#1b1f2e] p-3 text-white shadow-2xl">
+        <div className="flex items-center justify-between px-2 pb-2"><p className="text-xs font-black uppercase tracking-wider text-[#aeb7d5]">Choose your theme</p><button type="button" onClick={() => setThemeMenuOpen(false)} className="rounded-lg px-2 py-1 text-white/70">✕</button></div>
+        {ANIME_THEMES.map((item) => <button key={item.id} type="button" onClick={() => void savePersonalTheme(item.id)} disabled={themeSaving} className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm hover:bg-[#30364c] ${theme === item.id ? "bg-[#30364c]" : ""}`}><span>{item.emoji}</span><span className="flex-1">{item.label}</span>{theme === item.id && <span>✓</span>}</button>)}
+        <button type="button" onClick={() => void followCommunityTheme()} disabled={themeSaving} className="mt-2 w-full rounded-xl border border-[#414760] px-3 py-2 text-left text-xs font-bold text-[#cbd5e1] hover:bg-[#30364c]">↩ Use community default</button>
+        {isAdmin && <><div className="my-2 border-t border-[#414760]"/><p className="px-2 pb-2 text-xs font-black uppercase tracking-wider text-amber-300">Admin · Everyone's default</p>{ANIME_THEMES.map((item) => <button key={`community-${item.id}`} type="button" onClick={() => void saveGlobalTheme(item.id)} disabled={themeSaving} className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm hover:bg-[#30364c] ${globalTheme === item.id ? "bg-[#30364c]" : ""}`}><span>{item.emoji}</span><span className="flex-1">{item.label}</span>{globalTheme === item.id && <span>✓</span>}</button>)}</>}
+        {themeMessage && <p className="mt-2 rounded-lg bg-black/20 p-2 text-[11px] text-[#cbd5e1]">{themeMessage}</p>}
+        <p className="mt-2 text-[10px] leading-4 text-[#929ab8]">Your personal selection overrides the community default.</p>
+      </div>}
 
       {tab === "leaderboard" && (
         <section className="relative z-10 mx-auto max-w-5xl space-y-5 px-5 py-8 sm:px-8">
@@ -2387,12 +2671,12 @@ export default function Home() {
               <button type="button" onClick={() => setSelectedGlobalMember(null)} className="absolute right-3 top-3 rounded-full bg-black/40 px-3 py-1 text-white">✕</button>
             </div>
             <div className="px-6 pb-6">
-              <div className="relative z-10 -mt-9 flex h-20 w-20 items-center justify-center overflow-hidden rounded-full border-4 border-[#1b1f2e] bg-[#30364c] text-2xl font-black">{selectedGlobalMember.avatar_url ? <img src={selectedGlobalMember.avatar_url} alt="" className="h-full w-full object-cover" /> : (selectedGlobalMember.display_name || selectedGlobalMember.username).charAt(0).toUpperCase()}</div>
+              <button type="button" onClick={() => selectedGlobalMember.avatar_url && setAvatarZoomUrl(selectedGlobalMember.avatar_url)} className="relative z-10 -mt-9 flex h-20 w-20 items-center justify-center overflow-hidden rounded-full border-4 border-[#1b1f2e] bg-[#30364c] text-2xl font-black">{selectedGlobalMember.avatar_url ? <img src={selectedGlobalMember.avatar_url} alt="Zoom profile picture" className="h-full w-full object-cover" /> : (selectedGlobalMember.display_name || selectedGlobalMember.username).charAt(0).toUpperCase()}</button>
               <h2 className="mt-3 text-xl font-black">{selectedGlobalMember.display_name || selectedGlobalMember.username}</h2>
               <p className="text-sm text-[#aeb7d5]">@{selectedGlobalMember.username}</p>
               <p className="mt-4 whitespace-pre-wrap text-sm leading-6 text-[#e0e3f0]">{selectedGlobalMember.bio || "No bio added yet."}</p>
               <p className="mt-3 text-xs text-[#929bb8]">{formatLastSeen(selectedGlobalMember.last_seen_at || null)}</p>
-              {selectedGlobalMember.user_id !== profile?.user_id && <button type="button" onClick={() => { void sendFriendRequest(selectedGlobalMember.user_id); setSelectedGlobalMember(null); }} disabled={friendActionLoading === selectedGlobalMember.user_id} className="mt-5 w-full rounded-xl bg-[#7564d8] px-4 py-3 text-sm font-black text-white disabled:opacity-50">{friendActionLoading === selectedGlobalMember.user_id ? "Sending…" : "＋ Add friend"}</button>}
+              {selectedGlobalMember.user_id !== profile?.user_id && (() => { const alreadyFriend = friends.some((friend) => friend.user_id === selectedGlobalMember.user_id); const requestPending = outgoingRequests.some((request) => request.recipient_id === selectedGlobalMember.user_id && request.status === "pending"); const incomingPending = incomingRequests.some((request) => request.sender_id === selectedGlobalMember.user_id && request.status === "pending"); return alreadyFriend ? <div className="mt-5 w-full rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-center text-sm font-black text-emerald-300">✓ Friends</div> : requestPending ? <div className="mt-5 w-full rounded-xl border border-sky-400/40 bg-sky-400/10 px-4 py-3 text-center text-sm font-black text-sky-200">✓ Request Sent</div> : incomingPending ? <button type="button" onClick={() => { const request = incomingRequests.find((item) => item.sender_id === selectedGlobalMember.user_id); if (request) void respondToFriendRequest(request.id, "accepted"); setSelectedGlobalMember(null); }} className="mt-5 w-full rounded-xl bg-emerald-600 px-4 py-3 text-sm font-black text-white">Accept Friend Request</button> : <button type="button" onClick={() => void sendFriendRequest(selectedGlobalMember.user_id)} disabled={friendActionLoading === selectedGlobalMember.user_id} className="mt-5 w-full rounded-xl bg-[#7564d8] px-4 py-3 text-sm font-black text-white disabled:opacity-50">{friendActionLoading === selectedGlobalMember.user_id ? "Sending…" : "＋ Add friend"}</button>; })()}
             </div>
           </section>
         </div>
@@ -2416,6 +2700,8 @@ export default function Home() {
       )}
 
 
+
+      {avatarZoomUrl && <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 p-5" onClick={() => setAvatarZoomUrl(null)}><button type="button" onClick={() => setAvatarZoomUrl(null)} className="absolute right-5 top-5 rounded-full bg-white/15 px-4 py-2 text-white" aria-label="Close enlarged picture">✕</button><img src={avatarZoomUrl} alt="Enlarged profile picture" className="max-h-[85dvh] max-w-[90vw] rounded-2xl object-contain shadow-2xl" onClick={(event) => event.stopPropagation()} /></div>}
 
       {profileMenuOpen && (
         <div
