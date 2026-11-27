@@ -6,6 +6,8 @@ import type { ChangeEvent, ReactNode } from "react";
 import { LiveKitRoom, VideoTrack, useLocalParticipant, useTracks } from "@livekit/components-react";
 import { Track } from "livekit-client";
 import { createClient } from "../src/lib/client";
+import NotificationPrompt from "../src/components/NotificationPrompt";
+import { enablePushNotifications } from "../src/lib/notifications";
 
 type Screen =
   | "welcome"
@@ -228,6 +230,190 @@ function StickerPicker({ onSelect, onClose }: { onSelect: (url: string) => void;
   );
 }
 
+type WatchPlaybackRow = {
+  id: boolean;
+  playback_position: number;
+  is_playing: boolean;
+  updated_at: string;
+  updated_by: string | null;
+};
+
+type WatchEmbedInfo = { type: "youtube" | "vimeo" | "instagram" | "tiktok" | "video" | "invalid"; src: string };
+
+function SyncedWatchPlayer({
+  client,
+  isAdmin,
+  videoUrl,
+  getEmbed,
+}: {
+  client: ReturnType<typeof createClient>;
+  isAdmin: boolean;
+  videoUrl: string;
+  getEmbed: (url: string) => WatchEmbedInfo;
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const currentTimeRef = useRef(0);
+  const playingRef = useRef(false);
+  const applyingRemoteRef = useRef(false);
+  const lastAppliedUpdateRef = useRef<string | null>(null);
+  const [playback, setPlayback] = useState<WatchPlaybackRow | null>(null);
+  const [playbackError, setPlaybackError] = useState("");
+  const [duration, setDuration] = useState(0);
+  const embed = videoUrl ? getEmbed(videoUrl) : { type: "invalid" as const, src: "" };
+  const supportsSync = embed.type === "video" || embed.type === "youtube";
+
+  function sendYoutubeCommand(func: string, args: unknown[] = []) {
+    iframeRef.current?.contentWindow?.postMessage(JSON.stringify({ event: "command", func, args }), "*");
+  }
+
+  function applyPlaybackState(row: WatchPlaybackRow, force = false) {
+    const updateStamp = row.updated_at;
+    const isNewCommand = force || updateStamp !== lastAppliedUpdateRef.current;
+    const elapsed = row.is_playing ? Math.max(0, (Date.now() - new Date(row.updated_at).getTime()) / 1000) : 0;
+    const targetTime = Math.max(0, Number(row.playback_position || 0) + elapsed);
+    playingRef.current = row.is_playing;
+    if (isNewCommand) {
+      lastAppliedUpdateRef.current = updateStamp;
+      currentTimeRef.current = targetTime;
+      setPlayback(row);
+    }
+    const player = embed.type === "video" ? videoRef.current : null;
+    const actualTime = player?.currentTime ?? currentTimeRef.current;
+    const drift = Math.abs(actualTime - targetTime);
+    // Realtime commands apply immediately. Polling only corrects meaningful drift;
+    // it never seeks the player back to the same timestamp every few seconds.
+    const shouldSeek = isNewCommand ? drift > 1.25 : row.is_playing && drift > 4.5;
+    if (embed.type === "video" && player) {
+      applyingRemoteRef.current = true;
+      if (shouldSeek && Number.isFinite(targetTime)) player.currentTime = targetTime;
+      if (row.is_playing && player.paused) void player.play().catch(() => setPlaybackError("Tap play once on your device to allow synchronized playback."));
+      if (!row.is_playing && !player.paused) player.pause();
+      window.setTimeout(() => { applyingRemoteRef.current = false; }, 900);
+    } else if (embed.type === "youtube" && isNewCommand) {
+      applyingRemoteRef.current = true;
+      if (shouldSeek) sendYoutubeCommand("seekTo", [targetTime, true]);
+      sendYoutubeCommand(row.is_playing ? "playVideo" : "pauseVideo");
+      window.setTimeout(() => { applyingRemoteRef.current = false; }, 900);
+    }
+  }
+
+  async function loadPlayback() {
+    const { data, error } = await client.from("anime_watch_playback_state").select("id, playback_position, is_playing, updated_at, updated_by").eq("id", true).maybeSingle();
+    if (error) {
+      setPlaybackError(error.message.includes("anime_watch_playback_state") ? "Run the Watch playback SQL setup below before using synchronized playback." : error.message);
+      return;
+    }
+    if (data) applyPlaybackState(data as WatchPlaybackRow);
+  }
+
+  async function savePlayback(nextTime: number, nextPlaying: boolean) {
+    if (!isAdmin) return;
+    const { data: auth } = await client.auth.getUser();
+    if (!auth.user) return;
+    const row = {
+      id: true,
+      playback_position: Math.max(0, Number(nextTime) || 0),
+      is_playing: nextPlaying,
+      updated_at: new Date().toISOString(),
+      updated_by: auth.user.id,
+    };
+    const { error } = await client.from("anime_watch_playback_state").upsert(row, { onConflict: "id" });
+    if (error) setPlaybackError(error.message);
+    else {
+      currentTimeRef.current = row.playback_position;
+      playingRef.current = nextPlaying;
+      lastAppliedUpdateRef.current = row.updated_at;
+      setPlayback(row as WatchPlaybackRow);
+      setPlaybackError("");
+    }
+  }
+
+  async function togglePlayback() {
+    if (!isAdmin || !supportsSync) return;
+    const nextPlaying = !playingRef.current;
+    if (embed.type === "video" && videoRef.current) {
+      applyingRemoteRef.current = true;
+      if (nextPlaying) await videoRef.current.play().catch(() => setPlaybackError("Your browser blocked playback. Press Play for all again."));
+      else videoRef.current.pause();
+      currentTimeRef.current = videoRef.current.currentTime;
+      window.setTimeout(() => { applyingRemoteRef.current = false; }, 900);
+    } else if (embed.type === "youtube") {
+      sendYoutubeCommand(nextPlaying ? "playVideo" : "pauseVideo");
+    }
+    await savePlayback(currentTimeRef.current, nextPlaying);
+  }
+
+  async function seekBy(seconds: number) {
+    if (!isAdmin || !supportsSync) return;
+    const base = embed.type === "video" && videoRef.current ? videoRef.current.currentTime : currentTimeRef.current;
+    const next = Math.max(0, Math.min(duration || Number.MAX_SAFE_INTEGER, base + seconds));
+    if (embed.type === "video" && videoRef.current) videoRef.current.currentTime = next;
+    if (embed.type === "youtube") sendYoutubeCommand("seekTo", [next, true]);
+    currentTimeRef.current = next;
+    await savePlayback(next, playingRef.current);
+  }
+
+  useEffect(() => {
+    setPlayback(null);
+    currentTimeRef.current = 0;
+    playingRef.current = false;
+    lastAppliedUpdateRef.current = null;
+    void loadPlayback();
+    const channel = client.channel("anime-zone-watch-playback")
+      .on("postgres_changes", { event: "*", schema: "public", table: "anime_watch_playback_state" }, (payload) => {
+        const row = payload.new as WatchPlaybackRow;
+        if (row && row.id === true) applyPlaybackState(row);
+      })
+      .subscribe();
+    const poll = window.setInterval(() => { void loadPlayback(); }, 15000);
+    return () => { window.clearInterval(poll); void client.removeChannel(channel); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoUrl]);
+
+  if (!videoUrl) return <div className="flex h-full min-h-48 flex-col items-center justify-center px-6 text-center text-[#a5abc2]"><span className="text-5xl">🍿</span><p className="mt-4 font-bold text-white">Nothing is playing yet</p><p className="mt-1 text-sm">An admin can add a shared video or start a live screen share.</p></div>;
+  if (embed.type === "invalid") return <div className="flex h-full items-center justify-center px-6 text-center text-sm text-rose-300">This video URL is not supported. Ask an admin to update it.</div>;
+
+  return <div className="flex h-full min-h-48 flex-col bg-black">
+    <div className="relative min-h-0 flex-1 bg-black">
+      {embed.type === "video" ? <video ref={videoRef} key={embed.src} src={embed.src} playsInline preload="metadata" className="h-full w-full object-contain" onLoadedMetadata={(event) => setDuration(event.currentTarget.duration || 0)} onTimeUpdate={(event) => { if (!applyingRemoteRef.current) currentTimeRef.current = event.currentTarget.currentTime; }} onPlay={() => { if (isAdmin && !applyingRemoteRef.current) void savePlayback(videoRef.current?.currentTime || 0, true); }} onPause={() => { if (isAdmin && !applyingRemoteRef.current) void savePlayback(videoRef.current?.currentTime || 0, false); }} /> : embed.type === "youtube" ? <iframe ref={iframeRef} key={embed.src} src={embed.src} title="Anime Zone synchronized YouTube player" onLoad={() => void loadPlayback()} className="h-full w-full border-0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowFullScreen /> : <><iframe key={embed.src} src={embed.src} title="Anime Zone shared video" className="h-full w-full border-0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowFullScreen /><div className="absolute inset-x-2 bottom-2 rounded-lg bg-black/75 px-3 py-2 text-center text-[10px] text-white">This provider does not expose reliable remote playback controls. Use a direct MP4/WebM link or YouTube for synced play/pause/seek.</div></>}
+    </div>
+    {supportsSync && <div className="flex shrink-0 flex-wrap items-center justify-center gap-2 border-t border-white/10 bg-[#171a27] p-2.5">
+      {isAdmin ? <><button type="button" onClick={() => void seekBy(-10)} className="rounded-lg bg-[#30364c] px-3 py-2 text-xs font-bold text-white">↶ 10s</button><button type="button" onClick={() => void togglePlayback()} className="min-w-24 rounded-lg bg-[#8055d6] px-4 py-2 text-xs font-black text-white">{playback?.is_playing ? "Ⅱ Pause for all" : "▶ Play for all"}</button><button type="button" onClick={() => void seekBy(10)} className="rounded-lg bg-[#30364c] px-3 py-2 text-xs font-bold text-white">10s ↷</button></> : <span className="text-[11px] text-[#aeb7d5]">{playback?.is_playing ? "▶ Playing for everyone" : "Ⅱ Paused by an admin"}</span>}
+      <span className="text-[10px] text-[#737c9a]">{isAdmin ? "Only admins control shared playback" : "Playback is synchronized"}</span>
+    </div>}
+    {playbackError && <p role="status" className="shrink-0 bg-amber-500/10 px-3 py-2 text-center text-[10px] text-amber-200">{playbackError}</p>}
+  </div>;
+}
+
+function LeaderboardComingSoon() {
+  const [category, setCategory] = useState<"EXP" | "TIME" | "GOLD">("EXP");
+  const [remaining, setRemaining] = useState("");
+  useEffect(() => {
+    const update = () => {
+      const target = new Date("2026-12-01T00:00:00+02:00").getTime();
+      const diff = Math.max(0, target - Date.now());
+      const days = Math.floor(diff / 86400000);
+      const hours = Math.floor((diff % 86400000) / 3600000);
+      const minutes = Math.floor((diff % 3600000) / 60000);
+      const seconds = Math.floor((diff % 60000) / 1000);
+      setRemaining(diff <= 0 ? "We're live!" : `${days}d ${hours}h ${minutes}m ${seconds}s`);
+    };
+    update();
+    const timer = window.setInterval(update, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  return <section className="relative z-10 mx-auto max-w-6xl space-y-6 px-4 py-6 sm:px-8 sm:py-9">
+    <div className="text-center"><p className="text-xs font-black tracking-[.35em] text-sky-300">ANIME ZONE · COMMUNITY RANKINGS</p><h1 className="mt-2 text-3xl font-black text-white sm:text-5xl">Leaderboard</h1><p className="mt-2 text-sm text-[#a5abc2]">Three podium places. Your next milestone starts here.</p></div>
+    <div className="mx-auto flex w-fit max-w-full flex-wrap justify-center gap-1 rounded-2xl border border-[#34394f] bg-[#171a27] p-1">{(["EXP", "TIME", "GOLD"] as const).map((item) => <button key={item} type="button" onClick={() => setCategory(item)} className={`rounded-xl px-5 py-2.5 text-xs font-black tracking-widest transition ${category === item ? "bg-sky-500 text-[#071525] shadow-lg" : "text-[#a5abc2] hover:bg-[#292e43]"}`}>{item}</button>)}</div>
+    <div className="grid grid-cols-3 items-end gap-2 sm:gap-5">
+      {[{ place: 2, label: "2ND", height: "min-h-44", color: "border-slate-400/40 from-slate-500/20", medal: "🥈" }, { place: 1, label: "1ST", height: "min-h-56", color: "border-amber-300/50 from-amber-400/20", medal: "👑" }, { place: 3, label: "3RD", height: "min-h-40", color: "border-orange-400/40 from-orange-500/20", medal: "🥉" }].map((slot) => <div key={slot.place} className={`flex flex-col items-center justify-end rounded-t-3xl border border-b-0 bg-gradient-to-b ${slot.color} to-[#111827] px-2 pt-5 text-center ${slot.height}`}><div className="mb-2 text-3xl sm:text-4xl">{slot.medal}</div><div className="flex h-12 w-12 items-center justify-center rounded-full border-2 border-white/20 bg-[#242b3c] text-lg font-black text-white">?</div><p className="mt-2 text-xs font-black text-white sm:text-sm">Awaiting champion</p><p className="mt-1 text-[10px] font-black tracking-widest text-sky-200">{slot.label}</p><p className="mt-2 text-[10px] text-[#a5abc2]">{category} · —</p></div>)}
+    </div>
+    <div className="rounded-2xl border border-sky-400/30 bg-[#101b2b] px-4 py-5 text-center shadow-[0_0_35px_rgba(28,142,255,0.14)] sm:px-8"><p className="text-xs font-black tracking-[.3em] text-sky-300">STARTING SOON</p><p className="mt-2 text-3xl font-black tabular-nums text-white sm:text-4xl">{remaining || "…"}</p><p className="mt-2 text-xs text-[#9cb8d2]">Countdown to 1 December 2026</p></div>
+    <div className="overflow-hidden rounded-2xl border border-[#34394f] bg-[#171a27]"><div className="flex items-center justify-between gap-3 border-b border-[#34394f] px-4 py-4"><div><h2 className="font-black text-white">The rest of the rankings</h2><p className="mt-1 text-xs text-[#929ab8]">Member standings will appear here when the leaderboard launches.</p></div><span className="rounded-lg bg-sky-500/10 px-3 py-2 text-[10px] font-black text-sky-200">{category}</span></div><div className="grid grid-cols-[56px_minmax(0,1fr)_90px] gap-3 px-4 py-3 text-[10px] font-black uppercase tracking-widest text-[#737c9a]"><span>Place</span><span>Member</span><span className="text-right">{category}</span></div>{[4,5,6,7,8].map((place) => <div key={place} className="grid grid-cols-[56px_minmax(0,1fr)_90px] items-center gap-3 border-t border-[#34394f]/70 px-4 py-3 text-xs"><span className="font-black text-[#a5abc2]">#{place}</span><span className="truncate font-semibold text-white">Coming soon</span><span className="text-right font-bold text-sky-200">—</span></div>)}</div>
+  </section>;
+}
+
 function LiveKitScreenShareStage({ isAdmin, fallback }: { isAdmin: boolean; fallback: ReactNode }) {
   const screenShares = useTracks([Track.Source.ScreenShare]);
   const { localParticipant, isScreenShareEnabled } = useLocalParticipant();
@@ -425,6 +611,11 @@ export default function Home() {
   const [themeMessage, setThemeMessage] = useState("");
   const [avatarZoomUrl, setAvatarZoomUrl] = useState<string | null>(null);
   const [deletingSuggestionId, setDeletingSuggestionId] = useState<string | null>(null);
+  const [deletingGlobalMessageId, setDeletingGlobalMessageId] = useState<string | null>(null);
+  const [deletingWatchMessageId, setDeletingWatchMessageId] = useState<string | null>(null);
+  const [notificationEnabled, setNotificationEnabled] = useState(false);
+  const [notificationSettingsLoading, setNotificationSettingsLoading] = useState(false);
+  const [notificationSettingsError, setNotificationSettingsError] = useState("");
 
   // Monthly community anime theme voting and live site activity.
   const monthlyAnimeOptions = ["One Piece", "Naruto", "Jujutsu Kaisen", "Demon Slayer", "Solo Leveling", "Attack on Titan", "My Hero Academia", "Black Clover"];
@@ -434,6 +625,55 @@ export default function Home() {
   const [siteVisits, setSiteVisits] = useState(0);
   const [onlineNow, setOnlineNow] = useState(0);
 
+
+  useEffect(() => {
+    if (!profileMenuOpen) return;
+    let cancelled = false;
+
+    async function loadNotificationPreference() {
+      setNotificationSettingsLoading(true);
+      setNotificationSettingsError("");
+      try {
+        const response = await fetch("/api/notifications/preferences");
+        if (!response.ok) throw new Error("Could not load notification settings.");
+        const result = await response.json();
+        if (!cancelled) setNotificationEnabled(Boolean(result.preferences?.enabled));
+      } catch (err) {
+        if (!cancelled) {
+          setNotificationSettingsError(err instanceof Error ? err.message : "Could not load notification settings.");
+        }
+      } finally {
+        if (!cancelled) setNotificationSettingsLoading(false);
+      }
+    }
+
+    void loadNotificationPreference();
+    return () => { cancelled = true; };
+  }, [profileMenuOpen]);
+
+  async function toggleProfileNotifications() {
+    if (notificationSettingsLoading) return;
+    setNotificationSettingsLoading(true);
+    setNotificationSettingsError("");
+    try {
+      if (notificationEnabled) {
+        const response = await fetch("/api/notifications/preferences", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled: false }),
+        });
+        if (!response.ok) throw new Error("Could not turn notifications off.");
+        setNotificationEnabled(false);
+      } else {
+        await enablePushNotifications();
+        setNotificationEnabled(true);
+      }
+    } catch (err) {
+      setNotificationSettingsError(err instanceof Error ? err.message : "Could not update notification settings.");
+    } finally {
+      setNotificationSettingsLoading(false);
+    }
+  }
 
   // Restore an existing guest or registered session when Anime Zone is reopened.
   // Supabase persists the auth session in this browser until the user logs out.
@@ -837,7 +1077,23 @@ export default function Home() {
       setChatLoading(false);
     }
   }
+async function requestDmPush(messageId: string) {
+  try {
+    const response = await fetch("/api/notifications/dm", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ messageId }),
+    });
 
+    if (!response.ok) {
+      console.error("DM push notification failed:", await response.text());
+    }
+  } catch (error) {
+    console.error("DM notification request failed:", error);
+  }
+}
   async function sendChatMessage(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const content = chatDraft.trim();
@@ -850,13 +1106,21 @@ export default function Home() {
       if (authError) throw authError;
       if (!auth.user) throw new Error("Please sign in again.");
 
-      const { error: insertError } = await supabase
-        .from("anime_direct_messages")
-        .insert({
-          sender_id: auth.user.id,
-          recipient_id: selectedChatFriend.user_id,
-          content,
-        });
+      const { data: insertedMessage, error: insertError } = await supabase
+  .from("anime_direct_messages")
+  .insert({
+    sender_id: auth.user.id,
+    recipient_id: selectedChatFriend.user_id,
+    content,
+  })
+  .select("id")
+  .single();
+
+if (insertError) throw insertError;
+
+if (insertedMessage?.id) {
+  await requestDmPush(insertedMessage.id);
+}
       if (insertError) throw insertError;
 
       setChatDraft("");
@@ -1054,6 +1318,35 @@ export default function Home() {
     }
   }
 
+  async function deleteGlobalMessage(messageId: string) {
+    if (!isAdmin || deletingGlobalMessageId) return;
+    if (!window.confirm("Delete this Global Chat message? This cannot be undone.")) return;
+
+    setDeletingGlobalMessageId(messageId);
+    setGlobalError("");
+    try {
+      // The database RLS policy is the final authority; this client check only
+      // controls the interface and avoids unnecessary requests.
+      const { data: adminResult, error: adminCheckError } = await supabase.rpc("anime_is_admin");
+      if (adminCheckError) throw adminCheckError;
+      if (adminResult !== true) throw new Error("Only Anime Zone admins can delete Global Chat messages.");
+
+      const { error: deleteError } = await supabase
+        .from("anime_global_messages")
+        .delete()
+        .eq("id", messageId);
+      if (deleteError) throw deleteError;
+
+      setGlobalMessages((current) => current.filter((message) => message.id !== messageId));
+      setGlobalReplyTo((current) => current?.id === messageId ? null : current);
+    } catch (err) {
+      console.error("Global message deletion error:", err);
+      setGlobalError(err instanceof Error ? err.message : "Could not delete this Global Chat message.");
+    } finally {
+      setDeletingGlobalMessageId(null);
+    }
+  }
+
   // Keep mention alerts active even when the member is viewing another tab.
   useEffect(() => {
     if (screen !== "lobby") return;
@@ -1116,7 +1409,7 @@ export default function Home() {
         ? parsed.pathname.split("/").filter(Boolean)[0]
         : parsed.searchParams.get("v") || parsed.pathname.match(/\/(?:embed|shorts|live)\/([^/?]+)/)?.[1];
       if (!id) return { type: "invalid", src: "" };
-      return { type: "youtube", src: `https://www.youtube-nocookie.com/embed/${encodeURIComponent(id)}?rel=0&loop=1&playlist=${encodeURIComponent(id)}` };
+      return { type: "youtube", src: `https://www.youtube-nocookie.com/embed/${encodeURIComponent(id)}?rel=0&loop=1&playlist=${encodeURIComponent(id)}&enablejsapi=1&controls=0&origin=${encodeURIComponent(window.location.origin)}` };
     }
     if (host === "vimeo.com" || host.endsWith(".vimeo.com")) {
       const id = parsed.pathname.match(/\/(\d+)/)?.[1];
@@ -1240,6 +1533,32 @@ export default function Home() {
     }
   }
 
+  async function deleteWatchMessage(messageId: string) {
+    if (!isAdmin || deletingWatchMessageId) return;
+    if (!window.confirm("Delete this Watch Chat message? This cannot be undone.")) return;
+
+    setDeletingWatchMessageId(messageId);
+    setWatchChatError("");
+    try {
+      const { data: adminResult, error: adminCheckError } = await supabase.rpc("anime_is_admin");
+      if (adminCheckError) throw adminCheckError;
+      if (adminResult !== true) throw new Error("Only Anime Zone admins can delete Watch Chat messages.");
+
+      const { error: deleteError } = await supabase
+        .from("anime_watch_messages")
+        .delete()
+        .eq("id", messageId);
+      if (deleteError) throw deleteError;
+
+      setWatchMessages((current) => current.filter((message) => message.id !== messageId));
+    } catch (err) {
+      console.error("Watch message deletion error:", err);
+      setWatchChatError(err instanceof Error ? err.message : "Could not delete this Watch Chat message.");
+    } finally {
+      setDeletingWatchMessageId(null);
+    }
+  }
+
   async function sendAnimeZoneSticker(url: string, target: StickerTarget) {
     if (stickerSending) return;
     setStickerSending(true);
@@ -1251,8 +1570,21 @@ export default function Home() {
 
       if (target === "dm") {
         if (!selectedChatFriend) throw new Error("Open a friend's chat before sending a sticker.");
-        const { error: insertError } = await supabase.from("anime_direct_messages").insert({ sender_id: auth.user.id, recipient_id: selectedChatFriend.user_id, content });
-        if (insertError) throw insertError;
+        const { data: insertedMessage, error: insertError } = await supabase
+  .from("anime_direct_messages")
+  .insert({
+    sender_id: auth.user.id,
+    recipient_id: selectedChatFriend.user_id,
+    content,
+  })
+  .select("id")
+  .single();
+
+if (insertError) throw insertError;
+
+if (insertedMessage?.id) {
+  await requestDmPush(insertedMessage.id);
+}
         await loadChatMessages(selectedChatFriend.user_id, false);
         await loadUnreadMessages(auth.user.id);
       } else if (target === "global") {
@@ -1316,6 +1648,7 @@ export default function Home() {
       .subscribe();
     const timer = window.setInterval(() => {
       void loadWatchMessages();
+      void loadWatchVideo();
     }, 30000);
     return () => {
       window.clearInterval(timer);
@@ -2428,7 +2761,8 @@ export default function Home() {
 
   return (
     <main data-az-theme={theme} className="az-theme-root relative min-h-screen overflow-hidden bg-[#11131d] pb-24 text-[#f4f5fb] before:pointer-events-none before:fixed before:inset-0 before:bg-[radial-gradient(ellipse_at_10%_0%,rgba(75,55,130,0.22),transparent_35%),radial-gradient(ellipse_at_90%_35%,rgba(8,90,120,0.16),transparent_35%)] before:content-['']">
-      {(tab === "chat" || tab === "global") && <div aria-hidden="true" className="pointer-events-none fixed inset-0 z-40 overflow-hidden">{Array.from({ length: 42 }, (_, index) => <span key={index} className="az-snowflake" style={{ left: `${(index * 37) % 100}%`, fontSize: `${8 + (index % 5) * 3}px`, animationDuration: `${7 + (index % 9) * 1.35}s`, animationDelay: `${-((index * 1.7) % 18)}s`, opacity: 0.35 + (index % 5) * 0.12 }}>❄</span>)}</div>}
+      {screen === "lobby" && <NotificationPrompt />}
+      {theme === "snow-blue" && (tab === "chat" || tab === "global") && <div aria-hidden="true" className="pointer-events-none fixed inset-0 z-40 overflow-hidden">{Array.from({ length: 42 }, (_, index) => <span key={index} className="az-snowflake" style={{ left: `${(index * 37) % 100}%`, fontSize: `${8 + (index % 5) * 3}px`, animationDuration: `${7 + (index % 9) * 1.35}s`, animationDelay: `${-((index * 1.7) % 18)}s`, opacity: 0.35 + (index % 5) * 0.12 }}>❄</span>)}</div>}
       <style>{`
         .az-theme-root { transition: background-color .2s ease, color .2s ease; }
         @keyframes az-snow-fall { 0% { transform:translate3d(0,-8vh,0) rotate(0deg); opacity:0; } 10% { opacity:.85; } 90% { opacity:.75; } 100% { transform:translate3d(35px,108vh,0) rotate(360deg); opacity:0; } }
@@ -2640,7 +2974,7 @@ export default function Home() {
                       {message.reply_to && <div className="mb-2 rounded-lg border-l-2 border-violet-300/70 bg-black/15 px-3 py-2 text-xs text-white/75"><span className="font-bold">Replying to @{message.reply_username || "member"}</span><p className="mt-1 line-clamp-2">{message.reply_preview || "Original message unavailable"}</p></div>}
                       {getStickerUrl(message.content) ? <img src={getStickerUrl(message.content) || ""} alt="Sticker" className="max-h-52 max-w-full rounded-xl object-contain" /> : <p className="whitespace-pre-wrap break-words text-base leading-7">{message.content.split(/(@[a-zA-Z0-9_]+)/g).map((part, index) => part.startsWith("@") ? <span key={index} className="font-black text-[#d7c8ff]">{part}</span> : part)}</p>}
                     </div>
-                    <div className={`mt-1 flex items-center gap-3 px-2 text-[10px] text-[#7e87a4] ${mine ? "justify-end" : ""}`}><span>{new Date(message.created_at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}</span><button type="button" onClick={() => beginGlobalReply(message)} className="font-bold text-[#b6a7ff] opacity-100 sm:opacity-0 sm:group-hover:opacity-100">↩ Reply</button></div>
+                    <div className={`mt-1 flex items-center gap-3 px-2 text-[10px] text-[#7e87a4] ${mine ? "justify-end" : ""}`}><span>{new Date(message.created_at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}</span><button type="button" onClick={() => beginGlobalReply(message)} className="font-bold text-[#b6a7ff] opacity-100 sm:opacity-0 sm:group-hover:opacity-100">↩ Reply</button>{isAdmin && <button type="button" onClick={() => void deleteGlobalMessage(message.id)} disabled={deletingGlobalMessageId === message.id} className="font-bold text-rose-400 disabled:opacity-50">{deletingGlobalMessageId === message.id ? "Deleting…" : "Delete"}</button>}</div>
                   </div>
                 </div>;
               })}
@@ -2650,7 +2984,7 @@ export default function Home() {
               {globalReplyTo && <div className="mb-2 flex items-center gap-3 rounded-xl border-l-2 border-violet-400 bg-[#22263a] px-3 py-2"><div className="min-w-0 flex-1"><p className="text-[11px] font-black text-violet-200">Replying to @{globalReplyTo.username}</p><p className="truncate text-xs text-[#aeb7d5]">{globalReplyTo.content}</p></div><button type="button" onClick={() => setGlobalReplyTo(null)} className="rounded-lg px-2 py-1 text-sm text-[#c9cde0]" aria-label="Cancel reply">✕</button></div>}
               {mentionSuggestions.length > 0 && <div className="mb-2 max-h-48 overflow-y-auto rounded-xl border border-[#414760] bg-[#22263a] p-2 shadow-xl">{mentionSuggestions.map((person) => <button type="button" key={person.user_id} onClick={() => chooseGlobalMention(person)} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-white hover:bg-[#343953]"><span className="flex h-7 w-7 items-center justify-center rounded-full bg-[#51427f]">{person.username.charAt(0).toUpperCase()}</span><span className="font-bold">@{person.username}</span><span className="ml-auto text-xs text-[#9ba2bc]">{person.display_name}</span></button>)}</div>}
               {mentionSearchLoading && <p className="mb-1 px-2 text-[10px] text-[#9ba2bc]">Finding members…</p>}
-              <form onSubmit={sendGlobalMessage} className="flex items-end gap-2"><button type="button" title="Open sticker picker" onClick={() => setStickerPickerTarget((target) => target === "global" ? null : "global")} className="h-12 shrink-0 rounded-2xl border border-[#414760] bg-[#22263a] px-3 text-xl text-white">☻</button><textarea value={globalDraft} onChange={(event) => setGlobalDraft(event.target.value)} maxLength={1000} rows={1} placeholder="Message everyone… use @ to mention" className="max-h-28 min-h-12 min-w-0 flex-1 resize-y rounded-2xl border border-[#414760] bg-[#22263a] px-4 py-3 text-base text-white outline-none placeholder:text-[#8c94b0] focus:border-[#9d8cf0]"/><button type="submit" disabled={!globalDraft.trim() || globalSending} className="flex h-12 shrink-0 items-center justify-center rounded-2xl bg-[#8055d6] px-5 text-sm font-bold text-white transition hover:bg-[#7045c5] disabled:opacity-50">{globalSending ? "…" : "Send"}</button></form>
+              <form onSubmit={sendGlobalMessage} className="flex items-end gap-2"><button type="button" title="Open sticker picker" onClick={() => setStickerPickerTarget((target) => target === "global" ? null : "global")} className="h-12 shrink-0 rounded-2xl border border-[#414760] bg-[#22263a] px-3 text-xl text-white">☻</button><textarea value={globalDraft} onChange={(event) => setGlobalDraft(event.target.value)} maxLength={1000} rows={1} placeholder="Message everyone… use @ to mention" className="max-h-24 min-h-11 min-w-0 flex-1 resize-none rounded-2xl border border-[#414760] bg-[#22263a] px-4 py-3 text-base text-white outline-none placeholder:text-[#8c94b0] focus:border-[#9d8cf0]"/><button type="submit" disabled={!globalDraft.trim() || globalSending} className="flex h-12 shrink-0 items-center justify-center rounded-2xl bg-[#8055d6] px-5 text-sm font-bold text-white transition hover:bg-[#7045c5] disabled:opacity-50">{globalSending ? "…" : "Send"}</button></form>
             </div>
           </section>
         ) : tab === "watch" ? (
@@ -2661,23 +2995,23 @@ export default function Home() {
               <button type="button" onClick={() => setThemeMenuOpen((open) => !open)} className="ml-auto rounded-full border border-[#414760] bg-[#252a3d] px-3 py-2 text-sm text-white" aria-label="Choose theme">🎨</button>
               <button type="button" onClick={() => { void loadWatchVideo(); void loadWatchMessages(); }} className="rounded-full px-3 py-2 text-sm font-bold text-[#b9a8ff] hover:bg-[#292e43]" aria-label="Refresh Watch">↻</button>
             </header>
-            <div className="grid min-h-0 flex-1 grid-cols-1 gap-0 overflow-hidden lg:grid-cols-2">
-              <section className="flex min-h-[42dvh] min-w-0 flex-col border-b border-[#303449] bg-black lg:min-h-0 lg:border-b-0 lg:border-r">
+            {isAdmin && <div className="shrink-0 space-y-2 border-b border-[#303449] bg-[#171a27] px-3 py-2.5 sm:px-5"><label htmlFor="watch-video-url" className="block text-[10px] font-black uppercase tracking-wide text-[#c4c9dc]">Admin · Shared video link</label><div className="flex min-w-0 flex-col gap-2 sm:flex-row"><input id="watch-video-url" value={watchVideoDraft} onChange={(event) => setWatchVideoDraft(event.target.value)} placeholder="Paste YouTube or direct MP4/WebM link" className="min-w-0 flex-1 rounded-xl border border-[#414760] bg-[#22263a] px-3 py-2.5 text-sm text-white outline-none placeholder:text-[#8c94b0] focus:border-[#9d8cf0]"/><button type="button" onClick={() => void saveWatchVideo()} disabled={watchVideoSaving} className="rounded-xl bg-[#8055d6] px-5 py-2.5 text-sm font-black text-white disabled:opacity-50">{watchVideoSaving ? "Saving…" : "Update video"}</button></div>{watchVideoError && <p className="text-xs text-rose-200">{watchVideoError}</p>}</div>}
+            <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(130px,34dvh)_minmax(170px,1fr)] gap-0 overflow-hidden lg:grid-cols-2 lg:grid-rows-1">
+              <section className="flex min-h-0 min-w-0 flex-col border-b border-[#303449] bg-black lg:border-b-0 lg:border-r">
                 <div className="flex shrink-0 items-center justify-between gap-3 border-b border-[#303449] bg-[#171a27] px-4 py-2.5">
                   <h2 className="text-sm font-black text-white">Now playing</h2>
                   <span className="rounded-full bg-emerald-500/15 px-3 py-1 text-[10px] font-black text-emerald-300">SHARED PLAYER</span>
                 </div>
                 <div className="relative min-h-0 flex-1 bg-black">
-                  <LiveKitBroadcastPanel isAdmin={isAdmin} fallback={watchVideoLoading ? <div className="flex h-full min-h-48 items-center justify-center text-sm text-[#a5abc2]">Loading shared video…</div> : !watchVideoUrl ? <div className="flex h-full min-h-48 flex-col items-center justify-center px-6 text-center text-[#a5abc2]"><span className="text-5xl">🍿</span><p className="mt-4 font-bold text-white">Nothing is playing yet</p><p className="mt-1 text-sm">An admin can add a shared video or start a live screen share.</p></div> : (() => { const embed = getWatchEmbed(watchVideoUrl); if (embed.type === "video") return <video key={embed.src} src={embed.src} controls playsInline className="h-full w-full object-contain" />; if (embed.type === "invalid") return <div className="flex h-full items-center justify-center px-6 text-center text-sm text-rose-300">This video URL is not supported. Ask an admin to update it.</div>; return <iframe key={embed.src} src={embed.src} title="Anime Zone shared video" className="h-full w-full border-0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowFullScreen />; })()} />
+                  <LiveKitBroadcastPanel isAdmin={isAdmin} fallback={watchVideoLoading ? <div className="flex h-full min-h-48 items-center justify-center text-sm text-[#a5abc2]">Loading shared video…</div> : <SyncedWatchPlayer client={supabase} isAdmin={isAdmin} videoUrl={watchVideoUrl} getEmbed={getWatchEmbed} />} />
                 </div>
                 {watchVideoError && <p role="alert" className="shrink-0 bg-rose-500/10 px-4 py-2 text-xs text-rose-200">{watchVideoError}</p>}
-                {isAdmin && <div className="shrink-0 space-y-2 border-t border-[#303449] bg-[#171a27] p-3 sm:p-4"><label htmlFor="watch-video-url" className="block text-xs font-black uppercase tracking-wide text-[#c4c9dc]">Admin · Change shared video URL</label><div className="flex flex-col gap-2 sm:flex-row"><input id="watch-video-url" value={watchVideoDraft} onChange={(event) => setWatchVideoDraft(event.target.value)} placeholder="Paste YouTube, Vimeo, TikTok, Instagram or MP4 URL" className="min-w-0 flex-1 rounded-xl border border-[#414760] bg-[#22263a] px-4 py-3 text-sm text-white outline-none placeholder:text-[#8c94b0] focus:border-[#9d8cf0]"/><button type="button" onClick={() => void saveWatchVideo()} disabled={watchVideoSaving} className="rounded-xl bg-[#8055d6] px-5 py-3 text-sm font-black text-white disabled:opacity-50">{watchVideoSaving ? "Saving…" : "Update video"}</button></div><p className="text-[11px] leading-4 text-[#929ab8]">Changes sync to everyone through Supabase Realtime (with periodic refresh as backup).</p><p className="text-[11px] text-emerald-200">Use Start screen share above to broadcast your screen live. The shared URL remains available as a fallback.</p></div>}
               </section>
-              <section className="flex min-h-0 min-w-0 flex-col bg-[#10121b]">
+              <section className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-[#10121b]">
                 <header className="flex shrink-0 items-center justify-between border-b border-[#303449] bg-[#171a27] px-4 py-3"><div><h2 className="font-black text-white">💬 Watch Chat</h2><p className="mt-0.5 text-xs text-[#929ab8]">Live messages for everyone</p></div><button type="button" onClick={() => void loadWatchMessages()} disabled={watchMessagesLoading} className="rounded-xl px-3 py-2 text-sm font-bold text-[#b9a8ff] hover:bg-[#292e43]">{watchMessagesLoading ? "…" : "↻"}</button></header>
-                <div ref={watchScrollRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-4 py-5 sm:px-6">{watchMessagesLoading && watchMessages.length === 0 ? <p className="py-12 text-center text-sm text-[#929ab8]">Loading Watch chat…</p> : watchMessages.length === 0 ? <p className="py-12 text-center text-sm text-[#929ab8]">No messages yet. Start the conversation.</p> : watchMessages.map((message) => <div key={message.id} className="flex items-start gap-3"><div className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[#30364c] text-sm font-black text-white">{message.avatar_url ? <img src={message.avatar_url} alt="" className="h-full w-full object-cover"/> : message.display_name.charAt(0).toUpperCase()}</div><div className="min-w-0 flex-1"><div className="flex flex-wrap items-baseline gap-x-2 gap-y-1"><span className="text-sm font-bold text-[#c7baff]"><AdminName value={message.username}/></span><time className="text-[10px] text-[#737c9a]">{new Date(message.created_at).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"})}</time></div>{getStickerUrl(message.content) ? <img src={getStickerUrl(message.content) || ""} alt="Sticker" className="mt-1 max-h-48 max-w-full rounded-xl object-contain"/> : <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-white">{message.content}</p>}</div></div>)}</div>
+                <div ref={watchScrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-3 py-3 sm:space-y-4 sm:px-6 sm:py-5">{watchMessagesLoading && watchMessages.length === 0 ? <p className="py-12 text-center text-sm text-[#929ab8]">Loading Watch chat…</p> : watchMessages.length === 0 ? <p className="py-12 text-center text-sm text-[#929ab8]">No messages yet. Start the conversation.</p> : watchMessages.map((message) => <div key={message.id} className="flex items-start gap-3"><div className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[#30364c] text-sm font-black text-white">{message.avatar_url ? <img src={message.avatar_url} alt="" className="h-full w-full object-cover"/> : message.display_name.charAt(0).toUpperCase()}</div><div className="min-w-0 flex-1"><div className="flex flex-wrap items-baseline gap-x-2 gap-y-1"><span className="text-sm font-bold text-[#c7baff]"><AdminName value={message.username}/></span><time className="text-[10px] text-[#737c9a]">{new Date(message.created_at).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"})}</time>{isAdmin && <button type="button" onClick={() => void deleteWatchMessage(message.id)} disabled={deletingWatchMessageId === message.id} className="ml-auto text-[10px] font-bold text-rose-400 disabled:opacity-50">{deletingWatchMessageId === message.id ? "Deleting…" : "Delete"}</button>}</div>{getStickerUrl(message.content) ? <img src={getStickerUrl(message.content) || ""} alt="Sticker" className="mt-1 max-h-48 max-w-full rounded-xl object-contain"/> : <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-white">{message.content}</p>}</div></div>)}</div>
                 {watchChatError && <p role="alert" className="shrink-0 border-t border-[#303449] bg-rose-500/10 px-4 py-2 text-xs text-rose-200">{watchChatError}</p>}
-                <form onSubmit={sendWatchMessage} className="flex shrink-0 items-end gap-2 border-t border-[#303449] bg-[#171a27] p-3 sm:p-4"><button type="button" title="Open sticker picker" onClick={() => setStickerPickerTarget((target) => target === "watch" ? null : "watch")} className="h-12 shrink-0 rounded-2xl border border-[#414760] bg-[#22263a] px-3 text-xl text-white">☻</button><textarea value={watchDraft} onChange={(event) => setWatchDraft(event.target.value)} maxLength={1000} rows={1} placeholder="Chat about what you're watching…" className="max-h-28 min-h-12 min-w-0 flex-1 resize-y rounded-2xl border border-[#414760] bg-[#22263a] px-4 py-3 text-sm text-white outline-none placeholder:text-[#8c94b0] focus:border-[#9d8cf0]"/><button type="submit" disabled={!watchDraft.trim() || watchSending} className="h-12 shrink-0 rounded-2xl bg-[#8055d6] px-5 text-sm font-bold text-white disabled:opacity-50">{watchSending ? "…" : "Send"}</button></form>
+                <form onSubmit={sendWatchMessage} className="flex shrink-0 items-end gap-2 border-t border-[#303449] bg-[#171a27] p-2.5 pb-[calc(.625rem+env(safe-area-inset-bottom))] sm:p-4"><button type="button" title="Open sticker picker" onClick={() => setStickerPickerTarget((target) => target === "watch" ? null : "watch")} className="h-12 shrink-0 rounded-2xl border border-[#414760] bg-[#22263a] px-3 text-xl text-white">☻</button><textarea value={watchDraft} onChange={(event) => setWatchDraft(event.target.value)} maxLength={1000} rows={1} placeholder="Chat about what you're watching…" className="max-h-24 min-h-11 min-w-0 flex-1 resize-none rounded-2xl border border-[#414760] bg-[#22263a] px-4 py-3 text-sm text-white outline-none placeholder:text-[#8c94b0] focus:border-[#9d8cf0]"/><button type="submit" disabled={!watchDraft.trim() || watchSending} className="h-11 shrink-0 rounded-2xl bg-[#8055d6] px-4 text-sm font-bold text-white disabled:opacity-50">{watchSending ? "…" : "Send"}</button></form>
               </section>
             </div>
           </section>
@@ -2695,30 +3029,7 @@ export default function Home() {
         <p className="mt-2 text-[10px] leading-4 text-[#929ab8]">Your personal selection overrides the community default.</p>
       </div>}
 
-      {tab === "leaderboard" && (
-        <section className="relative z-10 mx-auto max-w-5xl space-y-5 px-5 py-8 sm:px-8">
-          <div className="space-y-3">
-            {[
-              { label: "EXP", detail: "Experience rankings", icon: "✦" },
-              { label: "TIME", detail: "Time spent in Anime Zone", icon: "◷" },
-              { label: "GIFTS", detail: "Community gifts and rewards", icon: "🎁" },
-            ].map((item) => <div key={item.label} className="flex min-h-20 items-center gap-4 rounded-2xl border border-[#34394f] bg-[#1c2030] px-5 py-4 shadow-lg"><span className="flex h-11 w-11 items-center justify-center rounded-xl bg-[#292e43] text-xl text-[#9ba8ff]">{item.icon}</span><div><p className="text-sm font-black tracking-[.2em] text-white">{item.label}</p><p className="mt-1 text-xs text-[#929ab8]">{item.detail}</p></div><span className="ml-auto text-xs font-bold text-[#737c9a]">SOON</span></div>)}
-          </div>
-          <div className="relative overflow-hidden rounded-3xl border border-[#285d88] bg-[#101b2b] px-5 py-16 text-center shadow-[0_0_35px_rgba(28,142,255,0.16)]">
-            <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(31,125,210,0.2),transparent_65%)]" />
-            <p className="relative text-xs font-black tracking-[.35em] text-[#7fcaff]">ANIME ZONE</p>
-            <h1 className="relative mt-4 text-3xl font-black tracking-[.12em] text-[#d8f1ff] [text-shadow:0_0_12px_rgba(56,189,248,.9),0_0_30px_rgba(37,99,235,.65)] sm:text-5xl">UNDER CONSTRUCTION</h1>
-            <p className="relative mx-auto mt-4 max-w-lg text-sm leading-6 text-[#9cb8d2]">The leaderboard is being built. EXP, time and gifts will appear here soon.</p>
-          </div>
-          <div className="flex flex-wrap justify-center gap-3 pt-2 text-sm font-bold">
-            <a className="rounded-xl border border-[#34394f] bg-[#1c2030] px-4 py-3 text-[#d8dcf0] hover:bg-[#292e43]" href="https://www.youtube.com/@greenbutton" target="_blank" rel="noreferrer">▶ YouTube</a>
-            <a className="rounded-xl border border-[#34394f] bg-[#1c2030] px-4 py-3 text-[#d8dcf0] hover:bg-[#292e43]" href="https://www.instagram.com/ootwtechh/" target="_blank" rel="noreferrer">◎ Instagram</a>
-            <a className="rounded-xl border border-[#34394f] bg-[#1c2030] px-4 py-3 text-[#d8dcf0] hover:bg-[#292e43]" href="https://www.tiktok.com/@ootwtech" target="_blank" rel="noreferrer">♪ TikTok</a>
-            <a className="rounded-xl border border-[#34394f] bg-[#1c2030] px-4 py-3 text-[#d8dcf0] hover:bg-[#292e43]" href="https://discord.gg/b5f67cE7v" target="_blank" rel="noreferrer">💬 Discord</a>
-            <a className="rounded-xl border border-[#34394f] bg-[#1c2030] px-4 py-3 text-[#d8dcf0] hover:bg-[#292e43]" href="mailto:agentcube1101@gmail.com">✉️ Email</a>
-          </div>
-        </section>
-      )}
+      {tab === "leaderboard" && <LeaderboardComingSoon />}
 
       {selectedGlobalMember && (
         <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/75 px-4 py-6 backdrop-blur-sm" onClick={() => setSelectedGlobalMember(null)}>
@@ -3014,6 +3325,31 @@ export default function Home() {
                 )}
               </>
             )}
+            <div className="mt-6 rounded-2xl border border-[#d9d4ff] bg-[#f7f5ff] p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <h3 className="font-black text-[#41366f]">🔔 Notifications</h3>
+                  <p className="mt-1 text-xs leading-5 text-[#6e6889]">
+                    Receive alerts for messages, mentions and Anime Zone updates.
+                  </p>
+                </div>
+                <span className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-black ${notificationEnabled ? "bg-emerald-100 text-emerald-700" : "bg-[#e9e7ff] text-[#6e6889]"}`}>
+                  {notificationEnabled ? "ON" : "OFF"}
+                </span>
+              </div>
+              {notificationSettingsError && <p role="alert" className="mt-3 text-xs text-red-600">{notificationSettingsError}</p>}
+              <button
+                type="button"
+                onClick={() => void toggleProfileNotifications()}
+                disabled={notificationSettingsLoading}
+                className="mt-3 w-full rounded-xl bg-[#8b5cf6] px-4 py-3 text-sm font-bold text-white disabled:opacity-50"
+              >
+                {notificationSettingsLoading ? "Updating…" : notificationEnabled ? "Turn notifications off" : "Enable notifications"}
+              </button>
+              <p className="mt-2 text-[10px] leading-4 text-[#85809d]">
+                You can change this any time. Your browser may ask for notification permission.
+              </p>
+            </div>
           </section>
         </div>
       )}
