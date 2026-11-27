@@ -1,11 +1,13 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/src/lib/server";
+import { createClient as createAdminClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
 
 export async function POST(request: NextRequest) {
   try {
+    // Verify the signed-in user first.
     const supabase = await createClient();
 
     const {
@@ -39,7 +41,22 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const { error } = await supabase
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+    if (!url || !serviceKey) {
+      throw new Error("Supabase server configuration is missing.");
+    }
+
+    // Server-only admin client. The user ID still comes from verified auth.
+    const admin = createAdminClient(url, serviceKey, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false,
+      },
+    });
+
+    const { error } = await admin
       .from("anime_push_subscriptions")
       .upsert(
         {
